@@ -105,17 +105,21 @@ ghcr.io/pgpanel/pgpanel:<VERSION>
 ```bash
 # once
 echo "ghp_XXX" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+# PAT: write:packages, read:packages, repo  (org pgpanel write access)
 
 cd /path/to/pgpanel
-./deploy/push-image.sh --latest          # linux/amd64 → GHCR
+# each run: patch +1 (0.1.0 → 0.1.1), build linux/amd64, push, write VERSION
+./deploy/push-image.sh --latest
 # optional multi-arch:
 ./deploy/push-image.sh --multi --latest
 
-# image + git in one go:
-./deploy/release-local.sh --yes --latest
+# recommended: image + VERSION commit + git push
+./deploy/release-local.sh --yes
 ```
 
-Make the package **public** under GitHub → Packages → `pgpanel` if VPS pulls without auth.
+- **Auto version:** every `./deploy/push-image.sh` (without `--no-bump` / `--tag`) increments the patch and publishes that tag so `VERSION` always matches GHCR.  
+- Make the package **Public**: GitHub → Packages → `pgpanel` → Package settings → Change visibility.  
+- If the repo shows **“No packages published”**, the image never reached GHCR (failed login/push). Fix login and re-run push before installing on the VPS.
 
 ---
 
