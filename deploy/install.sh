@@ -1460,9 +1460,14 @@ services:
       - NET_BIND_SERVICE
 
   panel:
-    # Pre-built image — VPS does not compile Rust/frontend unless PGPANEL_BUILD_LOCAL=1
+    # Prefer GHCR pre-built; build: enables local fallback if registry unauthorized/missing
     image: \${PGPANEL_IMAGE:-${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}}
-    pull_policy: \${PGPANEL_PULL_POLICY:-always}
+    pull_policy: \${PGPANEL_PULL_POLICY:-missing}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        PGPANEL_VERSION: \${PGPANEL_VERSION:-${PGPANEL_VERSION}}
     restart: unless-stopped
     env_file:
       - ../.env
@@ -1496,12 +1501,6 @@ services:
         max-file: "5"
     security_opt:
       - no-new-privileges:true
-    # Socket access requires privileges; keep caps minimal where possible
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 1G
     depends_on:
       - databasus
 
@@ -1764,45 +1763,95 @@ EOF
 }
 
 # ── Build & start ────────────────────────────────────────────────────────────
+ensure_panel_image() {
+  # Make sure the panel image name exists locally (pull GHCR or build or retag).
+  resolve_panel_image
+  if docker image inspect "$PGPANEL_IMAGE" >/dev/null 2>&1; then
+    log_ok "Panel image already local: ${PGPANEL_IMAGE}"
+    return 0
+  fi
+
+  # Reuse earlier local build name if present (previous installer runs)
+  if docker image inspect pgpanel-panel:latest >/dev/null 2>&1; then
+    log_info "Retagging existing pgpanel-panel:latest → ${PGPANEL_IMAGE}"
+    docker tag pgpanel-panel:latest "$PGPANEL_IMAGE"
+    return 0
+  fi
+
+  if [[ "${PGPANEL_BUILD_LOCAL}" -eq 1 ]]; then
+    log_warn "Building panel image locally (PGPANEL_BUILD_LOCAL=1)…"
+    (cd "${INSTALL_DIR}/deploy" && docker compose -f compose.yml build panel)
+    return 0
+  fi
+
+  log_info "Pulling panel image: ${PGPANEL_IMAGE}"
+  if docker pull "$PGPANEL_IMAGE"; then
+    log_ok "Pulled ${PGPANEL_IMAGE}"
+    return 0
+  fi
+
+  log_warn "GHCR pull failed (unauthorized / missing package). Building on this host…"
+  log_warn "Tip: push a public image from your Mac: ./deploy/push-image.sh --latest"
+  log_warn "Or make ghcr.io/pgpanel/pgpanel public in GitHub Packages."
+  (
+    cd "${INSTALL_DIR}/deploy"
+    set -a
+    # shellcheck source=/dev/null
+    source "${INSTALL_DIR}/.env"
+    set +a
+    export PGPANEL_IMAGE PGPANEL_VERSION PGPANEL_HOST_DATA="$DATA_DIR"
+    docker compose -f compose.yml build panel
+  )
+  if ! docker image inspect "$PGPANEL_IMAGE" >/dev/null 2>&1; then
+    # compose build tags as project service image — ensure tag exists
+    if docker image inspect pgpanel-panel:latest >/dev/null 2>&1; then
+      docker tag pgpanel-panel:latest "$PGPANEL_IMAGE"
+    fi
+  fi
+  docker image inspect "$PGPANEL_IMAGE" >/dev/null 2>&1 \
+    || die "Panel image still missing after local build: ${PGPANEL_IMAGE}"
+  log_ok "Local panel image ready: ${PGPANEL_IMAGE}"
+}
+
 build_and_start() {
   INSTALL_PHASE="start"
   resolve_panel_image
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_HOST_DATA" "$DATA_DIR"
+  # missing = use local image if present; don't re-fail on private GHCR every up
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
 
   prepare_compose_networks
+  # Always re-render compose so build: fallback is present
+  render_compose
+
+  ensure_panel_image
 
   (
     cd "${INSTALL_DIR}/deploy"
-    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR"
-    # shellcheck disable=SC1091
+    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
     set -a
     # shellcheck source=/dev/null
     source "${INSTALL_DIR}/.env"
     set +a
     docker compose -f compose.yml config >/dev/null
 
-    # Clear partial compose state without deleting named volumes / data
     docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
     prepare_compose_networks
 
-    if [[ "${PGPANEL_BUILD_LOCAL}" -eq 1 ]]; then
-      log_warn "PGPANEL_BUILD_LOCAL=1 — building on this host (slow)"
-      docker compose -f compose.yml build --pull
-    else
-      log_info "Pulling pre-built images (no cargo/npm on VPS)…"
-      if ! docker compose -f compose.yml pull; then
-        log_warn "Image pull failed — falling back to local build (requires time + RAM)"
-        docker compose -f compose.yml build --pull
-      fi
-    fi
+    # Pull only public deps; ignore panel GHCR errors
+    log_info "Pulling Caddy + Databasus…"
+    docker compose -f compose.yml pull caddy databasus 2>/dev/null \
+      || log_warn "Some dependency pulls failed — will retry on up"
+
     # Never use -v: data volumes must survive restarts/updates
     if ! docker compose -f compose.yml up -d --remove-orphans; then
       log_error "compose up failed — retrying after network cleanup"
       prepare_compose_networks
       docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
       prepare_compose_networks
+      ensure_panel_image
       docker compose -f compose.yml up -d --remove-orphans
     fi
   )

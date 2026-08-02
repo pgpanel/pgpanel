@@ -59,9 +59,14 @@ services:
       - /config/caddy
 
   panel:
-    # Pre-built multi-arch image — no on-server cargo/npm build required.
+    # Prefer pre-built GHCR image; build: is fallback when registry is private/missing.
     image: ${PGPANEL_IMAGE:-ghcr.io/pgpanel/pgpanel:0.1.0}
-    pull_policy: ${PGPANEL_PULL_POLICY:-always}
+    pull_policy: ${PGPANEL_PULL_POLICY:-missing}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        PGPANEL_VERSION: ${PGPANEL_VERSION:-0.1.0}
     restart: unless-stopped
     env_file:
       - ../.env
