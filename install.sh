@@ -5,7 +5,7 @@
 # One-line VPS install (after you push to GitHub and set PGPANEL_REPO):
 #
 #   sudo apt-get update && sudo apt-get install -y curl && \
-#   curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 #
 # Local checkout:
 #

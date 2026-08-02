@@ -95,19 +95,19 @@ See [docs/getting-started.md](docs/getting-started.md).
 
 ### One-liner (Databasus-style)
 
-After you push this repo to GitHub and replace `YOUR_USER`:
+After you push this repo to GitHub and replace `pgpanel`:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y curl && \
-curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
 Or with explicit repo:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y curl && \
-PGPANEL_REPO=https://github.com/YOUR_USER/pgpanel.git \
-curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
 ### From a local clone

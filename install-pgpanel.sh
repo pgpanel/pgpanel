@@ -5,12 +5,12 @@
 # Usage (on a Linux VPS):
 #
 #   sudo apt-get update && sudo apt-get install -y curl
-#   curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 #
 # Or pin a tag/branch:
 #
-#   curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/v0.1.0/install-pgpanel.sh | sudo bash
-#   PGPANEL_REPO=https://github.com/YOUR_USER/pgpanel.git \
+#   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/v0.1.0/install-pgpanel.sh | sudo bash
+#   PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
 #   PGPANEL_REF=main \
 #     curl -sSL ... | sudo bash
 #
@@ -24,7 +24,7 @@ set -Eeuo pipefail
 
 readonly DEFAULT_INSTALL_DIR="/opt/pgpanel"
 # CHANGE THIS after you push to GitHub (or always set PGPANEL_REPO):
-readonly DEFAULT_REPO="${PGPANEL_REPO:-https://github.com/YOUR_USER/pgpanel.git}"
+readonly DEFAULT_REPO="${PGPANEL_REPO:-https://github.com/pgpanel/pgpanel.git}"
 readonly DEFAULT_REF="${PGPANEL_REF:-main}"
 
 INSTALL_DIR="${PGPANEL_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
@@ -97,7 +97,7 @@ install_prereqs() {
 }
 
 is_placeholder_repo() {
-  [[ "$REPO_URL" == *"YOUR_USER"* ]]
+  [[ "$REPO_URL" == *"pgpanel"* ]]
 }
 
 resolve_repo_url() {
@@ -122,7 +122,7 @@ resolve_repo_url() {
   fi
 
   if [[ -t 0 ]]; then
-    warn "Default GitHub URL still contains YOUR_USER — set your real repo."
+    warn "Default GitHub URL still contains pgpanel — set your real repo."
     read -r -p "Git repository URL: " REPO_URL || true
     [[ -n "$REPO_URL" ]] || die "Repository URL required"
     return 0

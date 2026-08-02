@@ -36,14 +36,14 @@ git commit -m "Initial PgPanel MVP: panel, installer, deploy"
 
 # GitHubon hozz létre üres repót (pl. pgpanel), majd:
 git branch -M main
-git remote add origin https://github.com/YOUR_USER/pgpanel.git
+git remote add origin https://github.com/pgpanel/pgpanel.git
 git push -u origin main
 ```
 
 SSH-val:
 
 ```bash
-git remote add origin git@github.com:YOUR_USER/pgpanel.git
+git remote add origin git@github.com:pgpanel/pgpanel.git
 git push -u origin main
 ```
 
@@ -52,20 +52,20 @@ git push -u origin main
 Szerkeszd az `install-pgpanel.sh` tetején:
 
 ```bash
-readonly DEFAULT_REPO="${PGPANEL_REPO:-https://github.com/YOUR_USER/pgpanel.git}"
+readonly DEFAULT_REPO="${PGPANEL_REPO:-https://github.com/pgpanel/pgpanel.git}"
 ```
 
 cseréld a saját repódra, commitold, pushold. Utána a raw URL működik:
 
 ```text
-https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh
+https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh
 ```
 
 Privát repo: a raw curl nem működik auth nélkül. Használj:
 
 ```bash
 # gép a VPS-en, clone tokennel, majd helyi install
-git clone https://<TOKEN>@github.com/YOUR_USER/pgpanel.git /opt/pgpanel
+git clone https://<TOKEN>@github.com/pgpanel/pgpanel.git /opt/pgpanel
 sudo bash /opt/pgpanel/deploy/install.sh
 ```
 
@@ -79,26 +79,26 @@ sudo bash /opt/pgpanel/deploy/install.sh
 
 ```bash
 sudo apt-get update && sudo apt-get install -y curl && \
-curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
 Repo / branch felülírás:
 
 ```bash
-export PGPANEL_REPO=https://github.com/YOUR_USER/pgpanel.git
+export PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git
 export PGPANEL_REF=main
 # opcionális: export PGPANEL_MODE=install   # menü helyett közvetlen mód
 
 sudo apt-get update && sudo apt-get install -y curl && \
-curl -sSL "https://raw.githubusercontent.com/YOUR_USER/pgpanel/${PGPANEL_REF}/install-pgpanel.sh" | sudo bash
+curl -sSL "https://raw.githubusercontent.com/pgpanel/pgpanel/${PGPANEL_REF}/install-pgpanel.sh" | sudo bash
 ```
 
 Egy sorban env-vel:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y curl && \
-PGPANEL_REPO=https://github.com/YOUR_USER/pgpanel.git \
-curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | sudo bash
+PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
 ### Mit csinál a one-liner?
@@ -111,7 +111,7 @@ curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpan
 ### Helyi / már klónozott tree
 
 ```bash
-git clone https://github.com/YOUR_USER/pgpanel.git
+git clone https://github.com/pgpanel/pgpanel.git
 cd pgpanel
 sudo bash install.sh
 # vagy
@@ -134,7 +134,7 @@ pgpanel logs
 
 | Probléma | Megoldás |
 |----------|----------|
-| `YOUR_USER` a URL-ben | Állítsd `PGPANEL_REPO`-t vagy szerkeszd `install-pgpanel.sh`-t |
+| `pgpanel` a URL-ben | Állítsd `PGPANEL_REPO`-t vagy szerkeszd `install-pgpanel.sh`-t |
 | Nincs jelszó | Nézd: `/etc/pgpanel/.admin-password-ONCE` és a install log végét |
 | Setup 403 bootstrap | Másold a `PGPANEL_BOOTSTRAP_TOKEN`-t az `.env`-ből a setup formba |
 | curl\|bash nem interaktív | A menü TTY-t vár; futtasd SSH-n interaktívan, ne pure CI pipe-ból kérdés nélkül |
@@ -147,7 +147,7 @@ pgpanel logs
 Ez kényelmes, de a script tartalmát a futtatás előtt érdemes megnézni:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_USER/pgpanel/main/install-pgpanel.sh | less
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | less
 # majd:
 curl -sSL ... | sudo bash
 ```
