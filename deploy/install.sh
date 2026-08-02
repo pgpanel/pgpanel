@@ -17,7 +17,7 @@
 set -Eeuo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly INSTALLER_VERSION="1.5.0"
+readonly INSTALLER_VERSION="1.5.1"
 readonly PGPANEL_AUTHOR="Dezső Benedek Péter"
 readonly PGPANEL_OFFICIAL_REPO="https://github.com/pgpanel/pgpanel.git"
 readonly PGPANEL_GHCR_IMAGE="ghcr.io/pgpanel/pgpanel"
@@ -1051,12 +1051,18 @@ get_remote_version() {
 
 resolve_panel_image() {
   PGPANEL_VERSION="$(get_local_version)"
-  if [[ -z "$PGPANEL_IMAGE" ]]; then
-    if [[ "$UPDATE_CHANNEL" == "edge" ]]; then
-      PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:latest"
-    else
-      PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}"
-    fi
+  local official_prefix="${PGPANEL_GHCR_IMAGE}:"
+
+  if [[ "$UPDATE_CHANNEL" == "edge" ]]; then
+    PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:latest"
+    return 0
+  fi
+
+  # Always re-pin official GHCR tags to the tree VERSION. Stale pins in
+  # .env / installer.conf previously blocked updates (0.1.4 image on a 0.1.5 tree).
+  # Custom images (anything outside ghcr.io/pgpanel/pgpanel) are left alone.
+  if [[ -z "$PGPANEL_IMAGE" || "$PGPANEL_IMAGE" == "${official_prefix}"* ]]; then
+    PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}"
   fi
 }
 
@@ -1177,6 +1183,8 @@ generate_or_load_secrets() {
     # shellcheck disable=SC1090
     source "$env_file"
     set +a
+    # Re-resolve AFTER sourcing .env so stale PGPANEL_IMAGE pins cannot stick
+    resolve_panel_image
     # Refresh non-secret image/version pins for pull-based updates
     upsert_env_key "$env_file" "PGPANEL_VERSION" "$PGPANEL_VERSION"
     upsert_env_key "$env_file" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
@@ -1415,8 +1423,8 @@ services:
 
   panel:
     image: \${PGPANEL_IMAGE:-${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}}
-    # The installer pulls the panel image explicitly before startup. `missing`
-    # keeps a temporary registry outage from preventing a restart.
+    # The installer pulls the panel image explicitly before startup.
+    # pull_policy=missing keeps a temporary registry outage from blocking restarts.
     pull_policy: \${PGPANEL_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
@@ -1675,7 +1683,8 @@ ensure_panel_image() {
   # Installer NEVER builds on the VPS — only pulls pre-built images.
   resolve_panel_image
 
-  if docker image inspect "$PGPANEL_IMAGE" >/dev/null 2>&1; then
+  local force_pull="${FORCE_PANEL_PULL:-0}"
+  if [[ "$force_pull" -ne 1 ]] && docker image inspect "$PGPANEL_IMAGE" >/dev/null 2>&1; then
     log_ok "Panel image already local: ${PGPANEL_IMAGE}"
     return 0
   fi
@@ -2525,6 +2534,12 @@ do_update() {
   if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
     die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
   fi
+
+  # Force a registry pull so tag bumps (and mutable :latest) actually land.
+  FORCE_PANEL_PULL=1
+  # Drop stale image pin from installer.conf so resolve_panel_image rebinds to VERSION.
+  PGPANEL_IMAGE=""
+  resolve_panel_image
 
   # NEVER regenerate secrets / never docker compose down -v
   generate_or_load_secrets
