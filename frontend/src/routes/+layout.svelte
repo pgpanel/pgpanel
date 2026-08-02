@@ -1,72 +1,101 @@
 <script lang="ts">
-  import '../app.css';
-  import { onMount } from 'svelte';
-  import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
-  import { authReady, refreshMe, user, logout } from '$lib/auth';
+	import '../app.css';
+	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
+	import { authReady, refreshMe, user } from '$lib/auth';
+	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { Separator } from '$lib/components/ui/separator/index.js';
+	import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
+	import { Toaster } from '$lib/components/ui/sonner/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import AppSidebar from '$lib/components/app-sidebar.svelte';
 
-  let { children } = $props();
+	let { children } = $props();
 
-  const publicPaths = ['/login', '/setup'];
+	const publicPaths = ['/login', '/setup'];
 
-  onMount(async () => {
-    await refreshMe();
-  });
+	onMount(async () => {
+		await refreshMe();
+	});
 
-  $effect(() => {
-    if (!$authReady) return;
-    const path = $page.url.pathname;
-    if (!$user && !publicPaths.includes(path)) {
-      goto('/login');
-    }
-    if ($user && (path === '/login' || path === '/setup')) {
-      goto('/dashboard');
-    }
-  });
+	$effect(() => {
+		if (!$authReady) return;
+		const path = $page.url.pathname;
+		if (!$user && !publicPaths.includes(path)) {
+			goto('/login');
+		}
+		if ($user && (path === '/login' || path === '/setup')) {
+			goto('/dashboard');
+		}
+	});
+
+	const crumb = $derived.by(() => {
+		const parts = $page.url.pathname.split('/').filter(Boolean);
+		if (parts.length === 0) return [{ label: 'Home', href: '/dashboard' }];
+		const labels: Record<string, string> = {
+			dashboard: 'Dashboard',
+			clusters: 'Clusters',
+			new: 'New',
+			operations: 'Operations',
+			audit: 'Audit',
+			settings: 'Settings',
+			databases: 'Databases',
+			browser: 'Browser',
+			query: 'SQL console',
+			backup: 'Backup'
+		};
+		const out: { label: string; href: string }[] = [];
+		let acc = '';
+		for (const p of parts) {
+			acc += `/${p}`;
+			out.push({ label: labels[p] ?? (p.length > 12 ? p.slice(0, 8) + '…' : p), href: acc });
+		}
+		return out;
+	});
 </script>
 
-{#if !$authReady}
-  <div class="flex min-h-screen items-center justify-center text-slate-400">Loading…</div>
-{:else if publicPaths.includes($page.url.pathname)}
-  {@render children()}
-{:else if $user}
-  <div class="min-h-screen lg:grid lg:grid-cols-[240px_1fr]">
-    <aside class="border-b border-slate-800 bg-slate-900/60 lg:border-b-0 lg:border-r">
-      <div class="flex items-center gap-2 px-5 py-5">
-        <div class="h-8 w-8 rounded-lg bg-emerald-600/20 text-center text-lg leading-8 text-emerald-400">P</div>
-        <div>
-          <div class="font-semibold tracking-tight">PgPanel</div>
-          <div class="text-xs text-slate-500">PostgreSQL control plane</div>
-        </div>
-      </div>
-      <nav class="space-y-1 px-3 pb-6 text-sm">
-        <a class="nav" href="/dashboard">Dashboard</a>
-        <a class="nav" href="/clusters">Clusters</a>
-        <a class="nav" href="/clusters/new">New cluster</a>
-        <a class="nav" href="/operations">Operations</a>
-        <a class="nav" href="/audit">Audit log</a>
-        <a class="nav" href="/settings">Settings</a>
-      </nav>
-      <div class="border-t border-slate-800 px-5 py-4 text-sm text-slate-400">
-        <div class="mb-2">{$user.username}</div>
-        <button class="btn-secondary w-full" onclick={() => logout().then(() => goto('/login'))}>
-          Log out
-        </button>
-      </div>
-    </aside>
-    <main class="p-6 lg:p-8">{@render children()}</main>
-  </div>
-{/if}
+<Toaster richColors position="top-right" theme="dark" />
 
-<style>
-  :global(.nav) {
-    display: block;
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    color: rgb(203 213 225);
-  }
-  :global(.nav:hover) {
-    background: rgb(30 41 59);
-    color: white;
-  }
-</style>
+{#if !$authReady}
+	<div class="flex min-h-screen items-center justify-center bg-background">
+		<div class="flex w-64 flex-col gap-3">
+			<Skeleton class="h-8 w-32" />
+			<Skeleton class="h-4 w-full" />
+			<Skeleton class="h-4 w-3/4" />
+		</div>
+	</div>
+{:else if publicPaths.includes($page.url.pathname)}
+	{@render children()}
+{:else if $user}
+	<Sidebar.Provider>
+		<AppSidebar />
+		<Sidebar.Inset>
+			<header
+				class="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+			>
+				<Sidebar.Trigger class="-ms-1" />
+				<Separator orientation="vertical" class="mx-1 data-[orientation=vertical]:h-4" />
+				<Breadcrumb.Root>
+					<Breadcrumb.List>
+						{#each crumb as c, i}
+							<Breadcrumb.Item>
+								{#if i === crumb.length - 1}
+									<Breadcrumb.Page>{c.label}</Breadcrumb.Page>
+								{:else}
+									<Breadcrumb.Link href={c.href}>{c.label}</Breadcrumb.Link>
+								{/if}
+							</Breadcrumb.Item>
+							{#if i < crumb.length - 1}
+								<Breadcrumb.Separator />
+							{/if}
+						{/each}
+					</Breadcrumb.List>
+				</Breadcrumb.Root>
+			</header>
+			<div class="flex flex-1 flex-col gap-4 p-4 md:p-6 lg:p-8">
+				{@render children()}
+			</div>
+		</Sidebar.Inset>
+	</Sidebar.Provider>
+{/if}

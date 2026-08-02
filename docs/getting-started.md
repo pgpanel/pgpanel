@@ -82,23 +82,26 @@ sudo apt-get update && sudo apt-get install -y curl && \
 curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
-Repo / branch felülírás:
+Alapértelmezett repo: `https://github.com/pgpanel/pgpanel.git` (nem kell `PGPANEL_REPO`).
+
+Branch / env felülírás — az env-et a **bash**-nek add (a `sudo` elnyeli a sima prefixet):
 
 ```bash
-export PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git
-export PGPANEL_REF=main
-# opcionális: export PGPANEL_MODE=install   # menü helyett közvetlen mód
-
-sudo apt-get update && sudo apt-get install -y curl && \
-curl -sSL "https://raw.githubusercontent.com/pgpanel/pgpanel/${PGPANEL_REF}/install-pgpanel.sh" | sudo bash
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh \
+  | sudo env PGPANEL_REF=main bash
 ```
 
-Egy sorban env-vel:
+Vagy:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y curl && \
-PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
-curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh \
+  | sudo bash -s -- --ref main
+```
+
+**Rossz** (a változó csak a `curl`-re vonatkozik):
+
+```bash
+PGPANEL_REPO=... curl ... | sudo bash
 ```
 
 ### Mit csinál a one-liner?

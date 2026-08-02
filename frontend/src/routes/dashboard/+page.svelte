@@ -1,78 +1,192 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { api, statusBadge, type Cluster, type DashboardStats, type Operation } from '$lib/api';
+	import { onMount } from 'svelte';
+	import { api, type Cluster, type DashboardStats, type Operation } from '$lib/api';
+	import PageHeader from '$lib/components/page-header.svelte';
+	import StatusBadge from '$lib/components/status-badge.svelte';
+	import EmptyState from '$lib/components/empty-state.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import * as Card from '$lib/components/ui/card/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import * as Alert from '$lib/components/ui/alert/index.js';
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import {
+		DatabaseIcon,
+		CheckmarkCircle02Icon,
+		Alert02Icon,
+		Activity01Icon,
+		PlusSignIcon
+	} from '@hugeicons/core-free-icons';
 
-  let stats = $state<DashboardStats | null>(null);
-  let clusters = $state<Cluster[]>([]);
-  let ops = $state<Operation[]>([]);
-  let error = $state('');
+	let stats = $state<DashboardStats | null>(null);
+	let clusters = $state<Cluster[]>([]);
+	let ops = $state<Operation[]>([]);
+	let error = $state('');
+	let loading = $state(true);
 
-  onMount(async () => {
-    try {
-      stats = await api<DashboardStats>('/api/dashboard');
-      clusters = await api<Cluster[]>('/api/clusters');
-      ops = await api<Operation[]>('/api/operations');
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load';
-    }
-  });
+	onMount(async () => {
+		try {
+			[stats, clusters, ops] = await Promise.all([
+				api<DashboardStats>('/api/dashboard'),
+				api<Cluster[]>('/api/clusters'),
+				api<Operation[]>('/api/operations')
+			]);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load dashboard';
+		} finally {
+			loading = false;
+		}
+	});
+
+	const cards = $derived(
+		stats
+			? [
+					{
+						label: 'Clusters',
+						value: stats.cluster_count,
+						icon: DatabaseIcon,
+						tone: 'text-primary'
+					},
+					{
+						label: 'Healthy',
+						value: stats.healthy_count,
+						icon: CheckmarkCircle02Icon,
+						tone: 'text-emerald-400'
+					},
+					{
+						label: 'Degraded / warning',
+						value: stats.degraded_count,
+						icon: Alert02Icon,
+						tone: 'text-amber-400'
+					},
+					{
+						label: 'Databases',
+						value: stats.database_count,
+						icon: DatabaseIcon,
+						tone: 'text-sky-400'
+					},
+					{
+						label: 'Active operations',
+						value: stats.active_operations,
+						icon: Activity01Icon,
+						tone: 'text-violet-400'
+					},
+					{
+						label: 'Failed operations',
+						value: stats.failed_operations,
+						icon: Alert02Icon,
+						tone: 'text-rose-400'
+					}
+				]
+			: []
+	);
 </script>
 
-<div class="mb-6 flex items-end justify-between gap-4">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight">Dashboard</h1>
-    <p class="text-sm text-slate-400">Cluster health, backups, and active operations</p>
-  </div>
-  <a class="btn-primary" href="/clusters/new">New cluster</a>
-</div>
+<PageHeader title="Dashboard" description="Cluster health, backups, and active operations">
+	{#snippet actions()}
+		<Button href="/clusters/new">
+			<HugeiconsIcon icon={PlusSignIcon} class="size-4" strokeWidth={2} />
+			New cluster
+		</Button>
+	{/snippet}
+</PageHeader>
 
 {#if error}
-  <div class="mb-4 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-200">{error}</div>
+	<Alert.Root variant="destructive" class="mb-6">
+		<HugeiconsIcon icon={Alert02Icon} class="size-4" strokeWidth={2} />
+		<Alert.Title>Could not load dashboard</Alert.Title>
+		<Alert.Description>{error}</Alert.Description>
+	</Alert.Root>
 {/if}
 
-{#if stats}
-  <div class="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-    <div class="card"><div class="text-xs text-slate-400">Clusters</div><div class="mt-1 text-3xl font-semibold">{stats.cluster_count}</div></div>
-    <div class="card"><div class="text-xs text-slate-400">Healthy</div><div class="mt-1 text-3xl font-semibold text-emerald-400">{stats.healthy_count}</div></div>
-    <div class="card"><div class="text-xs text-slate-400">Degraded / warning</div><div class="mt-1 text-3xl font-semibold text-amber-400">{stats.degraded_count}</div></div>
-    <div class="card"><div class="text-xs text-slate-400">Databases</div><div class="mt-1 text-3xl font-semibold">{stats.database_count}</div></div>
-    <div class="card"><div class="text-xs text-slate-400">Active operations</div><div class="mt-1 text-3xl font-semibold">{stats.active_operations}</div></div>
-    <div class="card"><div class="text-xs text-slate-400">Failed operations</div><div class="mt-1 text-3xl font-semibold text-rose-400">{stats.failed_operations}</div></div>
-  </div>
+{#if loading}
+	<div class="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+		{#each Array(6) as _}
+			<Skeleton class="h-28 rounded-xl" />
+		{/each}
+	</div>
+{:else}
+	<div class="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+		{#each cards as c}
+			<Card.Root class="overflow-hidden border-border/60">
+				<Card.Content class="flex items-start justify-between pt-6">
+					<div>
+						<p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">{c.label}</p>
+						<p class="mt-2 text-3xl font-semibold tabular-nums tracking-tight">{c.value}</p>
+					</div>
+					<div class="rounded-lg bg-muted/50 p-2.5 {c.tone}">
+						<HugeiconsIcon icon={c.icon} class="size-5" strokeWidth={2} />
+					</div>
+				</Card.Content>
+			</Card.Root>
+		{/each}
+	</div>
 {/if}
 
 <div class="grid gap-6 xl:grid-cols-2">
-  <section class="card">
-    <h2 class="mb-4 font-medium">Clusters</h2>
-    <div class="space-y-2">
-      {#each clusters as c}
-        <a class="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2 hover:bg-slate-800/50" href={`/clusters/${c.id}`}>
-          <div>
-            <div class="font-medium">{c.name}</div>
-            <div class="text-xs text-slate-500">PostgreSQL {c.postgres_version} · {c.slug}</div>
-          </div>
-          <span class={statusBadge(c.status)}>{c.status}</span>
-        </a>
-      {:else}
-        <p class="text-sm text-slate-500">No clusters yet.</p>
-      {/each}
-    </div>
-  </section>
+	<Card.Root class="border-border/60">
+		<Card.Header class="flex-row items-center justify-between space-y-0">
+			<div>
+				<Card.Title>Clusters</Card.Title>
+				<Card.Description>Managed PostgreSQL instances</Card.Description>
+			</div>
+			<Button variant="outline" size="sm" href="/clusters">View all</Button>
+		</Card.Header>
+		<Card.Content class="space-y-2">
+			{#each clusters.slice(0, 6) as c}
+				<a
+					class="flex items-center justify-between rounded-lg border border-border/50 bg-muted/20 px-3 py-2.5 transition hover:bg-muted/40"
+					href={`/clusters/${c.id}`}
+				>
+					<div class="min-w-0">
+						<p class="truncate font-medium">{c.name}</p>
+						<p class="text-xs text-muted-foreground">
+							PostgreSQL {c.postgres_version} · {c.slug}
+						</p>
+					</div>
+					<StatusBadge status={c.status} />
+				</a>
+			{:else}
+				{#if !loading}
+					<EmptyState
+						title="No clusters yet"
+						description="Provision your first PostgreSQL cluster to get started."
+					>
+						{#snippet action()}
+							<Button size="sm" href="/clusters/new">Create cluster</Button>
+						{/snippet}
+					</EmptyState>
+				{/if}
+			{/each}
+		</Card.Content>
+	</Card.Root>
 
-  <section class="card">
-    <h2 class="mb-4 font-medium">Recent operations</h2>
-    <div class="space-y-2">
-      {#each ops.slice(0, 8) as op}
-        <a class="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2 hover:bg-slate-800/50" href="/operations">
-          <div>
-            <div class="font-medium">{op.job_type}</div>
-            <div class="text-xs text-slate-500">{op.id.slice(0, 8)}… · {op.progress}%</div>
-          </div>
-          <span class={statusBadge(op.status)}>{op.status}</span>
-        </a>
-      {:else}
-        <p class="text-sm text-slate-500">No operations yet.</p>
-      {/each}
-    </div>
-  </section>
+	<Card.Root class="border-border/60">
+		<Card.Header class="flex-row items-center justify-between space-y-0">
+			<div>
+				<Card.Title>Recent operations</Card.Title>
+				<Card.Description>Background jobs and provisioning</Card.Description>
+			</div>
+			<Button variant="outline" size="sm" href="/operations">View all</Button>
+		</Card.Header>
+		<Card.Content class="space-y-2">
+			{#each ops.slice(0, 8) as op}
+				<a
+					class="flex items-center justify-between rounded-lg border border-border/50 bg-muted/20 px-3 py-2.5 transition hover:bg-muted/40"
+					href="/operations"
+				>
+					<div class="min-w-0">
+						<p class="font-medium font-mono text-sm">{op.job_type}</p>
+						<p class="text-xs text-muted-foreground">
+							{op.id.slice(0, 8)}… · {op.progress}%
+						</p>
+					</div>
+					<StatusBadge status={op.status} />
+				</a>
+			{:else}
+				{#if !loading}
+					<p class="py-8 text-center text-sm text-muted-foreground">No operations yet</p>
+				{/if}
+			{/each}
+		</Card.Content>
+	</Card.Root>
 </div>

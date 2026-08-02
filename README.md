@@ -95,19 +95,17 @@ See [docs/getting-started.md](docs/getting-started.md).
 
 ### One-liner (Databasus-style)
 
-After you push this repo to GitHub and replace `pgpanel`:
-
 ```bash
 sudo apt-get update && sudo apt-get install -y curl && \
 curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
-Or with explicit repo:
+Default repo is `https://github.com/pgpanel/pgpanel.git`. Optional overrides must reach **bash** (not only curl):
 
 ```bash
-sudo apt-get update && sudo apt-get install -y curl && \
-PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
-curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh \
+  | sudo env PGPANEL_REF=main bash
+# or: | sudo bash -s -- --ref main
 ```
 
 ### From a local clone

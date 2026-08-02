@@ -7,15 +7,15 @@
 #   sudo apt-get update && sudo apt-get install -y curl
 #   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 #
-# Or pin a tag/branch:
+# Optional overrides (must be visible to bash, not only curl):
 #
-#   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/v0.1.0/install-pgpanel.sh | sudo bash
-#   PGPANEL_REPO=https://github.com/pgpanel/pgpanel.git \
-#   PGPANEL_REF=main \
-#     curl -sSL ... | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh \
+#     | sudo env PGPANEL_REF=main bash
 #
-# Environment overrides:
-#   PGPANEL_REPO          Git clone URL (required when not in a local checkout)
+#   curl -sSL ... | sudo bash -s -- --ref main
+#
+# Environment:
+#   PGPANEL_REPO          Git clone URL (default: official repo below)
 #   PGPANEL_REF           Branch or tag (default: main)
 #   PGPANEL_INSTALL_DIR   Install path (default: /opt/pgpanel)
 #   PGPANEL_MODE          install|update|repair|... (default: interactive menu)
@@ -23,13 +23,12 @@
 set -Eeuo pipefail
 
 readonly DEFAULT_INSTALL_DIR="/opt/pgpanel"
-# CHANGE THIS after you push to GitHub (or always set PGPANEL_REPO):
-readonly DEFAULT_REPO="${PGPANEL_REPO:-https://github.com/pgpanel/pgpanel.git}"
-readonly DEFAULT_REF="${PGPANEL_REF:-main}"
+readonly DEFAULT_REPO="https://github.com/pgpanel/pgpanel.git"
+readonly DEFAULT_REF="main"
 
 INSTALL_DIR="${PGPANEL_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-REPO_URL="${DEFAULT_REPO}"
-GIT_REF="${DEFAULT_REF}"
+REPO_URL="${PGPANEL_REPO:-$DEFAULT_REPO}"
+GIT_REF="${PGPANEL_REF:-$DEFAULT_REF}"
 MODE="${PGPANEL_MODE:-}"
 
 C_RED=$'\033[31m'
@@ -46,7 +45,7 @@ die()  { printf '%s[pgpanel]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    die "Run as root: curl -sSL <url> | sudo bash"
+    die "Run as root, e.g.: curl -sSL <url> | sudo bash"
   fi
 }
 
@@ -63,6 +62,67 @@ detect_pkg() {
   fi
 }
 
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        REPO_URL="${2:-}"
+        shift 2
+        ;;
+      --repo=*)
+        REPO_URL="${1#*=}"
+        shift
+        ;;
+      --ref)
+        GIT_REF="${2:-}"
+        shift 2
+        ;;
+      --ref=*)
+        GIT_REF="${1#*=}"
+        shift
+        ;;
+      --dir)
+        INSTALL_DIR="${2:-}"
+        shift 2
+        ;;
+      --dir=*)
+        INSTALL_DIR="${1#*=}"
+        shift
+        ;;
+      --mode)
+        MODE="${2:-}"
+        shift 2
+        ;;
+      --mode=*)
+        MODE="${1#*=}"
+        shift
+        ;;
+      -h|--help)
+        cat <<'EOF'
+PgPanel remote installer
+
+Usage:
+  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
+
+  curl -sSL ... | sudo bash -s -- --ref main --mode install
+
+Options:
+  --repo URL     Git repository (default: https://github.com/pgpanel/pgpanel.git)
+  --ref  NAME    Branch or tag (default: main)
+  --dir  PATH    Install directory (default: /opt/pgpanel)
+  --mode NAME    Pass --mode to deploy/install.sh
+EOF
+        exit 0
+        ;;
+      *)
+        # Ignore unknown for forward compatibility when piped
+        warn "Ignoring unknown argument: $1"
+        shift
+        ;;
+    esac
+  done
+}
+
 install_prereqs() {
   local pkg
   pkg="$(detect_pkg)"
@@ -70,10 +130,11 @@ install_prereqs() {
   have curl || need+=(curl)
   have git || need+=(git)
   have openssl || need+=(openssl)
-  have ca-certificates || need+=(ca-certificates)
 
-  # filter: ca-certificates may already exist as files
-  [[ -f /etc/ssl/certs/ca-certificates.crt || -f /etc/pki/tls/certs/ca-bundle.crt ]] && true
+  # Only request ca-certificates package if cert bundle missing
+  if [[ ! -f /etc/ssl/certs/ca-certificates.crt && ! -f /etc/pki/tls/certs/ca-bundle.crt ]]; then
+    need+=(ca-certificates)
+  fi
 
   if [[ ${#need[@]} -eq 0 ]]; then
     ok "Prerequisites present (curl/git/openssl)"
@@ -96,63 +157,63 @@ install_prereqs() {
   esac
 }
 
+# Only treat explicit placeholders as unset — never the real pgpanel org URL.
 is_placeholder_repo() {
-  [[ "$REPO_URL" == *"pgpanel"* ]]
+  local u="${1:-}"
+  [[ -z "$u" ]] && return 0
+  [[ "$u" == *"YOUR_USER"* ]] && return 0
+  [[ "$u" == *"myuser"* ]] && return 0
+  [[ "$u" == *"example.com"* ]] && return 0
+  [[ "$u" == "CHANGE_ME" ]] && return 0
+  return 1
 }
 
 resolve_repo_url() {
-  if ! is_placeholder_repo; then
-    return 0
+  # Prefer env if set and non-placeholder
+  if [[ -n "${PGPANEL_REPO:-}" ]] && ! is_placeholder_repo "$PGPANEL_REPO"; then
+    REPO_URL="$PGPANEL_REPO"
   fi
 
-  # If script lives inside a real checkout, use that
+  # Running from a local checkout: use that tree
   if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     local here
-    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [[ -f "${here}/deploy/install.sh" || -f "${here}/Cargo.toml" ]]; then
-      REPO_URL=""
-      return 0
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || here=""
+    if [[ -n "$here" && ( -f "${here}/deploy/install.sh" || -f "${here}/Cargo.toml" ) ]]; then
+      # Local mode only if not forced remote
+      if [[ -z "${PGPANEL_REPO:-}" ]]; then
+        REPO_URL=""
+        INSTALL_DIR="$here"
+        ok "Using local checkout: $INSTALL_DIR"
+        return 0
+      fi
     fi
   fi
 
-  # Interactive / env required for curl|bash with placeholder
-  if [[ -n "${PGPANEL_REPO:-}" ]]; then
-    REPO_URL="$PGPANEL_REPO"
-    return 0
+  if is_placeholder_repo "$REPO_URL"; then
+    if [[ -t 0 ]]; then
+      warn "Repository URL looks like a placeholder."
+      read -r -p "Git repository URL [${DEFAULT_REPO}]: " REPO_URL || true
+      REPO_URL="${REPO_URL:-$DEFAULT_REPO}"
+    else
+      REPO_URL="$DEFAULT_REPO"
+    fi
   fi
 
-  if [[ -t 0 ]]; then
-    warn "Default GitHub URL still contains pgpanel — set your real repo."
-    read -r -p "Git repository URL: " REPO_URL || true
-    [[ -n "$REPO_URL" ]] || die "Repository URL required"
-    return 0
+  if is_placeholder_repo "$REPO_URL"; then
+    die "Invalid repository URL. Use: curl -sSL ... | sudo bash"
   fi
 
-  cat >&2 <<'EOF'
-ERROR: Set your GitHub repository URL before one-line install.
-
-Example:
-  PGPANEL_REPO=https://github.com/myuser/pgpanel.git \
-  curl -sSL https://raw.githubusercontent.com/myuser/pgpanel/main/install-pgpanel.sh | sudo bash
-
-Or edit DEFAULT_REPO in install-pgpanel.sh after first push.
-EOF
-  exit 1
+  ok "Repository URL: $REPO_URL"
 }
 
 clone_or_update() {
   install_prereqs
   resolve_repo_url
 
-  # Local tree (script next to deploy/)
+  # Local tree already selected
   if [[ -z "$REPO_URL" ]]; then
-    local here
-    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [[ -f "${here}/deploy/install.sh" ]]; then
-      INSTALL_DIR="$here"
-      ok "Using local checkout: $INSTALL_DIR"
-      return 0
-    fi
+    [[ -f "${INSTALL_DIR}/deploy/install.sh" ]] || die "Local deploy/install.sh missing"
+    return 0
   fi
 
   mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -173,9 +234,14 @@ clone_or_update() {
     ok "Found existing tree without .git at ${INSTALL_DIR}"
   else
     log "Cloning ${REPO_URL} (${GIT_REF}) → ${INSTALL_DIR}"
-    # Hide tokens in logs
-    if ! git clone --branch "$GIT_REF" --single-branch "$REPO_URL" "$INSTALL_DIR" 2>/dev/null; then
-      git clone "$REPO_URL" "$INSTALL_DIR" || die "git clone failed"
+    # Clean partial failed clone
+    if [[ -d "$INSTALL_DIR" && ! -d "${INSTALL_DIR}/.git" ]]; then
+      if [[ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]]; then
+        rmdir "$INSTALL_DIR" 2>/dev/null || true
+      fi
+    fi
+    if ! git clone --branch "$GIT_REF" --single-branch "$REPO_URL" "$INSTALL_DIR"; then
+      git clone "$REPO_URL" "$INSTALL_DIR" || die "git clone failed — is the repo public and the URL correct?"
       git -C "$INSTALL_DIR" checkout "$GIT_REF" || true
     fi
   fi
@@ -189,11 +255,10 @@ run_installer() {
   if [[ -n "$MODE" ]]; then
     args+=(--mode "$MODE")
   fi
-  # Pass through remaining args from environment style
   export PGPANEL_INSTALL_DIR="$INSTALL_DIR"
-  log "Launching interactive installer…"
+  log "Launching installer…"
   echo ""
-  exec bash "${INSTALL_DIR}/deploy/install.sh" "${args[@]+"${args[@]}"}" "$@"
+  exec bash "${INSTALL_DIR}/deploy/install.sh" "${args[@]+"${args[@]}"}"
 }
 
 print_banner() {
@@ -213,11 +278,11 @@ EOF
 }
 
 main() {
+  parse_args "$@"
   need_root
   print_banner
   clone_or_update
-  # Remaining CLI args after bootstrap (if any when not piped)
-  run_installer "$@"
+  run_installer
 }
 
 main "$@"
