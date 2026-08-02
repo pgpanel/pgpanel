@@ -21,7 +21,10 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/nodes", get(list_nodes).post(create_node))
-        .route("/api/nodes/{id}", get(get_node).put(update_node).delete(delete_node))
+        .route(
+            "/api/nodes/{id}",
+            get(get_node).put(update_node).delete(delete_node),
+        )
         .route("/api/nodes/{id}/ping", post(ping_node))
 }
 
@@ -100,14 +103,12 @@ const NODE_SELECT: &str = r#"
     FROM nodes n
 "#;
 
-async fn list_nodes(
-    State(state): State<AppState>,
-    _auth: AuthUser,
-) -> ApiResult<Json<Vec<Node>>> {
-    let rows = sqlx::query_as::<_, NodeRow>(&format!("{NODE_SELECT} ORDER BY n.is_default DESC, n.name"))
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+async fn list_nodes(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<Vec<Node>>> {
+    let rows =
+        sqlx::query_as::<_, NodeRow>(&format!("{NODE_SELECT} ORDER BY n.is_default DESC, n.name"))
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     Ok(Json(
         rows.into_iter()
             .filter_map(|r| r.into_node().ok())
@@ -251,7 +252,12 @@ async fn update_node(
 
     let mut docker_host = existing.docker_host.clone();
     let mut encrypted = existing.docker_host_encrypted;
-    if let Some(host) = req.docker_host.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(host) = req
+        .docker_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if !(host.starts_with("unix://")
             || host.starts_with("tcp://")
             || host.starts_with("http://")
@@ -287,10 +293,7 @@ async fn update_node(
         .status
         .map(|s| s.as_str().to_string())
         .unwrap_or(existing.status);
-    let labels = req
-        .labels
-        .map(|v| v.to_string())
-        .unwrap_or(existing.labels);
+    let labels = req.labels.map(|v| v.to_string()).unwrap_or(existing.labels);
     let notes = req.notes.or(existing.notes);
     let max_clusters = match req.max_clusters {
         // 0 or negative means unlimited (NULL)
@@ -403,7 +406,9 @@ async fn ping_node(
     let host = if row.0 == "local" {
         None
     } else if row.2 != 0 {
-        let enc = row.1.ok_or_else(|| AppError(Error::Internal("missing docker_host".into())))?;
+        let enc = row
+            .1
+            .ok_or_else(|| AppError(Error::Internal("missing docker_host".into())))?;
         let plain = pgpanel_core::crypto::decrypt_secret(&state.config.master_encryption_key, &enc)
             .map_err(AppError)?;
         Some(plain.expose_secret().to_string())

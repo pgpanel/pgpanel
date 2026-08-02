@@ -32,7 +32,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/clusters/{id}/backup/history", get(history))
         .route("/api/clusters/{id}/metrics", get(metrics))
-        .route("/api/settings/backup-policy", get(get_policy).post(set_policy))
+        .route(
+            "/api/settings/backup-policy",
+            get(get_policy).post(set_policy),
+        )
 }
 
 #[derive(Deserialize)]
@@ -616,7 +619,13 @@ async fn set_policy(
         &now,
     )
     .await?;
-    put(&state, "backup.keep_count", &body.keep_count.to_string(), &now).await?;
+    put(
+        &state,
+        "backup.keep_count",
+        &body.keep_count.to_string(),
+        &now,
+    )
+    .await?;
     put(
         &state,
         "backup.schedule_hour",

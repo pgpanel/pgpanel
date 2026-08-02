@@ -96,33 +96,30 @@ async fn create_cluster(
     };
 
     let node_id = if let Some(nid) = req.node_id {
-        let exists: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM nodes WHERE id = ? AND status != 'disabled'",
-        )
-        .bind(nid.to_string())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT id FROM nodes WHERE id = ? AND status != 'disabled'")
+                .bind(nid.to_string())
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|e| AppError(Error::Internal(e.to_string())))?;
         if exists.is_none() {
             return Err(AppError(Error::Validation(
                 "selected node does not exist or is disabled".into(),
             )));
         }
         // Capacity check — NULL or <= 0 means unlimited
-        let max: Option<i64> =
-            sqlx::query_scalar("SELECT max_clusters FROM nodes WHERE id = ?")
-                .bind(nid.to_string())
-                .fetch_optional(&state.pool)
-                .await
-                .ok()
-                .flatten();
+        let max: Option<i64> = sqlx::query_scalar("SELECT max_clusters FROM nodes WHERE id = ?")
+            .bind(nid.to_string())
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
         if let Some(max) = max.filter(|m| *m > 0) {
-            let count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE node_id = ?")
-                    .bind(nid.to_string())
-                    .fetch_one(&state.pool)
-                    .await
-                    .unwrap_or(0);
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE node_id = ?")
+                .bind(nid.to_string())
+                .fetch_one(&state.pool)
+                .await
+                .unwrap_or(0);
             if count >= max {
                 return Err(AppError(Error::Validation(format!(
                     "node is at capacity ({max} clusters)"
@@ -424,10 +421,12 @@ async fn dashboard(
             .fetch_one(&state.pool)
             .await
             .unwrap_or(0),
-        replica_count: sqlx::query_scalar("SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0),
+        replica_count: sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0),
         backup_destinations: sqlx::query_scalar(
             "SELECT COUNT(*) FROM backup_destinations WHERE enabled = 1",
         )

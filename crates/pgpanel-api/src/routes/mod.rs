@@ -16,6 +16,7 @@ mod settings;
 mod tokens;
 mod users;
 pub mod waf;
+mod wal;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -55,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .merge(users::routes())
         .merge(destinations::routes())
         .merge(replicas::routes())
+        .merge(wal::routes())
         .merge(monitoring::routes())
         .merge(tokens::routes())
         .merge(fleet::routes())

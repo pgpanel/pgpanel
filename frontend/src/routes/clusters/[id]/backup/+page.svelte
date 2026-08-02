@@ -6,6 +6,7 @@
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
 	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+	import ClusterWalPanel from '$lib/components/cluster-wal-panel.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -16,6 +17,7 @@
 	import * as Table from '$lib/components/ui/table/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
+	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import { toast } from 'svelte-sonner';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
@@ -28,7 +30,8 @@
 		Delete02Icon,
 		RestoreBinIcon,
 		Calendar03Icon,
-		Target01Icon
+		Target01Icon,
+		DatabaseSyncIcon
 	} from '@hugeicons/core-free-icons';
 
 	interface BackupStatus {
@@ -55,6 +58,7 @@
 	}
 
 	const id = $derived($page.params.id);
+	let activeTab = $state('logical');
 	let cluster = $state<Cluster | null>(null);
 	let status = $state<BackupStatus | null>(null);
 	let history = $state<BackupRow[]>([]);
@@ -137,6 +141,8 @@
 	}
 
 	onMount(() => {
+		const tab = $page.url.searchParams.get('tab');
+		if (tab === 'wal') activeTab = 'wal';
 		load().catch((e) => (error = e.message));
 	});
 
@@ -355,24 +361,40 @@
 </div>
 
 <PageHeader
-	title="Backups"
-	description="Native engine · pg_dump / pg_restore · local or S3 · scheduled retention"
+	title="Backups & recovery"
+	description="Logical dumps · WAL streaming · point-in-time recovery"
 >
 	{#snippet actions()}
-		<Button variant="outline" onclick={enable}>
-			<HugeiconsIcon icon={RefreshIcon} class="size-4" strokeWidth={2} />
-			Enable / schedule
-		</Button>
-		<Button variant="outline" onclick={verify}>
-			<HugeiconsIcon icon={SecurityCheckIcon} class="size-4" strokeWidth={2} />
-			Verify latest
-		</Button>
-		<Button variant="outline" onclick={prune}>
-			<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
-			Prune
-		</Button>
+		{#if activeTab === 'logical'}
+			<Button variant="outline" onclick={enable}>
+				<HugeiconsIcon icon={RefreshIcon} class="size-4" strokeWidth={2} />
+				Enable / schedule
+			</Button>
+			<Button variant="outline" onclick={verify}>
+				<HugeiconsIcon icon={SecurityCheckIcon} class="size-4" strokeWidth={2} />
+				Verify latest
+			</Button>
+			<Button variant="outline" onclick={prune}>
+				<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
+				Prune
+			</Button>
+		{/if}
 	{/snippet}
 </PageHeader>
+
+<Tabs.Root bind:value={activeTab} class="mb-6 space-y-6">
+	<Tabs.List>
+		<Tabs.Trigger value="logical">
+			<HugeiconsIcon icon={CloudBackupIcon} class="size-4" strokeWidth={2} />
+			Logical
+		</Tabs.Trigger>
+		<Tabs.Trigger value="wal">
+			<HugeiconsIcon icon={DatabaseSyncIcon} class="size-4" strokeWidth={2} />
+			WAL / PITR
+		</Tabs.Trigger>
+	</Tabs.List>
+
+	<Tabs.Content value="logical" class="space-y-0">
 
 {#if error}
 	<Alert.Root variant="destructive" class="mb-4">
@@ -787,6 +809,16 @@
 		{/if}
 	</Card.Content>
 </Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="wal">
+		{#if cluster && id}
+			<ClusterWalPanel clusterId={id} clusterName={cluster.name} />
+		{:else}
+			<p class="text-sm text-muted-foreground">Loading cluster…</p>
+		{/if}
+	</Tabs.Content>
+</Tabs.Root>
 
 <ConfirmDialog
 	bind:open={deleteScheduleOpen}

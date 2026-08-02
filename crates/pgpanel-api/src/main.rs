@@ -100,6 +100,9 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = run_replica_sync_tick(&sched_ctx).await {
                 tracing::warn!(error = %e, "replica sync tick");
             }
+            if let Err(e) = run_wal_sync_tick(&sched_ctx).await {
+                tracing::warn!(error = %e, "WAL sync tick");
+            }
             if let Err(e) = run_alert_tick(&sched_ctx).await {
                 tracing::warn!(error = %e, "alert tick");
             }
@@ -248,7 +251,9 @@ fn cron_matches(cron: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
                 return value >= start && (value - start) % step == 0;
             }
         }
-        field.split(',').any(|p| p.parse::<u32>().ok() == Some(value))
+        field
+            .split(',')
+            .any(|p| p.parse::<u32>().ok() == Some(value))
     }
     if !field_match(parts[0], minute) || !field_match(parts[1], hour) {
         return false;
@@ -266,7 +271,9 @@ fn cron_matches(cron: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
             Weekday::Fri => 5,
             Weekday::Sat => 6,
         };
-        if !field_match(parts[2], dom) || !field_match(parts[3], month) || !field_match(parts[4], dow)
+        if !field_match(parts[2], dom)
+            || !field_match(parts[3], month)
+            || !field_match(parts[4], dow)
         {
             return false;
         }
@@ -383,6 +390,65 @@ async fn run_replica_sync_tick(ctx: &JobContext) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_wal_sync_tick(ctx: &JobContext) -> anyhow::Result<()> {
+    let now = chrono::Utc::now();
+    let streams: Vec<(String, i64)> = sqlx::query_as(
+        r#"
+        SELECT cluster_id, retention_days
+        FROM wal_streams
+        WHERE enabled = 1
+          AND (last_synced_at IS NULL OR datetime(last_synced_at) < datetime('now', '-2 minutes'))
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await
+    .unwrap_or_default();
+
+    for (cluster_id, retention_days) in streams {
+        if let Ok(cluster_uuid) = uuid::Uuid::parse_str(&cluster_id) {
+            let _ = ctx
+                .queue
+                .enqueue(
+                    pgpanel_core::models::JobType::SyncWal,
+                    Some(cluster_uuid),
+                    serde_json::json!({}),
+                    Some(&format!(
+                        "wal-sync-{cluster_id}-{}",
+                        now.format("%Y%m%d%H%M")
+                    )),
+                )
+                .await;
+        }
+
+        let cutoff = format!("-{} days", retention_days.clamp(1, 3650));
+        let expired: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, storage_key FROM wal_segments WHERE cluster_id = ? AND COALESCE(archived_at, synced_at) < datetime('now', ?)",
+        )
+        .bind(&cluster_id)
+        .bind(&cutoff)
+        .fetch_all(&ctx.pool)
+        .await
+        .unwrap_or_default();
+        for (segment_id, storage_key) in expired {
+            let _ = ctx.backup.delete_object(&storage_key).await;
+            let _ = sqlx::query("DELETE FROM wal_segments WHERE id = ?")
+                .bind(segment_id)
+                .execute(&ctx.pool)
+                .await;
+        }
+        let _ = sqlx::query(
+            "UPDATE wal_streams SET segment_count = (SELECT COUNT(*) FROM wal_segments WHERE cluster_id = ?), total_bytes = (SELECT COALESCE(SUM(size_bytes), 0) FROM wal_segments WHERE cluster_id = ?), updated_at = ? WHERE cluster_id = ?",
+        )
+        .bind(&cluster_id)
+        .bind(&cluster_id)
+        .bind(now.to_rfc3339())
+        .bind(&cluster_id)
+        .execute(&ctx.pool)
+        .await;
+    }
+    Ok(())
+}
+
 async fn run_alert_tick(ctx: &JobContext) -> anyhow::Result<()> {
     let _ = ctx
         .queue
@@ -390,7 +456,10 @@ async fn run_alert_tick(ctx: &JobContext) -> anyhow::Result<()> {
             pgpanel_core::models::JobType::EvaluateAlerts,
             None,
             serde_json::json!({}),
-            Some(&format!("alerts-{}", chrono::Utc::now().format("%Y%m%d%H%M"))),
+            Some(&format!(
+                "alerts-{}",
+                chrono::Utc::now().format("%Y%m%d%H%M")
+            )),
         )
         .await;
     Ok(())

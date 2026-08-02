@@ -103,6 +103,15 @@ pub struct LogicalBackupResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhysicalBackupResult {
+    pub backup_id: Uuid,
+    pub storage_key: String,
+    pub size_bytes: u64,
+    pub checksum_sha256: String,
+    pub encrypted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupStatusSummary {
     pub integration_status: String,
     pub storage_type: String,

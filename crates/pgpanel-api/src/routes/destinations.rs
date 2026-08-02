@@ -140,10 +140,26 @@ async fn build_storage_backend(
         return Ok(Arc::new(LocalStorage::new(backup_data_dir(state))));
     }
 
-    let access_key = access_key.or(decrypt_credential(state, row.access_key_encrypted.as_deref()))
-        .ok_or_else(|| AppError(Error::Validation("access key is required for S3 storage".into())))?;
-    let secret_key = secret_key.or(decrypt_credential(state, row.secret_key_encrypted.as_deref()))
-        .ok_or_else(|| AppError(Error::Validation("secret key is required for S3 storage".into())))?;
+    let access_key = access_key
+        .or(decrypt_credential(
+            state,
+            row.access_key_encrypted.as_deref(),
+        ))
+        .ok_or_else(|| {
+            AppError(Error::Validation(
+                "access key is required for S3 storage".into(),
+            ))
+        })?;
+    let secret_key = secret_key
+        .or(decrypt_credential(
+            state,
+            row.secret_key_encrypted.as_deref(),
+        ))
+        .ok_or_else(|| {
+            AppError(Error::Validation(
+                "secret key is required for S3 storage".into(),
+            ))
+        })?;
 
     let config = S3StorageConfig {
         endpoint: if row.endpoint.trim().is_empty() {
@@ -214,10 +230,11 @@ async fn list_destinations(
     State(state): State<AppState>,
     _auth: AuthUser,
 ) -> ApiResult<Json<Vec<BackupDestination>>> {
-    let rows = sqlx::query_as::<_, DestRow>(&format!("{DEST_SELECT} ORDER BY is_default DESC, name"))
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let rows =
+        sqlx::query_as::<_, DestRow>(&format!("{DEST_SELECT} ORDER BY is_default DESC, name"))
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     Ok(Json(
         rows.into_iter()
             .filter_map(|r| r.into_destination().ok())
@@ -357,7 +374,9 @@ async fn create_destination(
     .await
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
-            AppError(Error::Conflict("destination name or slug already exists".into()))
+            AppError(Error::Conflict(
+                "destination name or slug already exists".into(),
+            ))
         } else {
             AppError(Error::Internal(e.to_string()))
         }
@@ -678,9 +697,9 @@ async fn list_cluster_targets(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<ClusterBackupTarget>>> {
     let _ = load_cluster(&state, id).await?;
-    let rows = sqlx::query_as::<_, TargetRow>(
-        &format!("{TARGET_SELECT} WHERE t.cluster_id = ? ORDER BY t.priority, d.name"),
-    )
+    let rows = sqlx::query_as::<_, TargetRow>(&format!(
+        "{TARGET_SELECT} WHERE t.cluster_id = ? ORDER BY t.priority, d.name"
+    ))
     .bind(id.to_string())
     .fetch_all(&state.pool)
     .await
@@ -701,11 +720,12 @@ async fn upsert_cluster_target(
     require_write(&auth)?;
     let _ = load_cluster(&state, id).await?;
 
-    let dest_exists: Option<String> = sqlx::query_scalar("SELECT id FROM backup_destinations WHERE id = ?")
-        .bind(req.destination_id.to_string())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let dest_exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM backup_destinations WHERE id = ?")
+            .bind(req.destination_id.to_string())
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     if dest_exists.is_none() {
         return Err(AppError(Error::NotFound("backup destination".into())));
     }

@@ -11,7 +11,8 @@
 		fetchUpdateStatus,
 		checkForUpdates,
 		applyUpdate,
-		updateChecking
+		updateChecking,
+		updateError
 	} from '$lib/updates';
 	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import PageHeader from '$lib/components/page-header.svelte';
@@ -108,6 +109,11 @@
 			storageError = 'Could not load the current storage configuration';
 		}
 		updates = await fetchUpdateStatus();
+		if (window.location.hash === '#updates') {
+			requestAnimationFrame(() => {
+				document.getElementById('updates')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			});
+		}
 	});
 
 	async function loadTokens() {
@@ -169,9 +175,9 @@
 	async function handleApplyUpdate() {
 		applying = true;
 		try {
-			await applyUpdate();
-			toast.success('Update started — the panel may restart shortly');
-			updates = await fetchUpdateStatus();
+			const result = await applyUpdate();
+			toast.success(result.message ?? 'Update started — the panel may restart shortly');
+			setTimeout(() => fetchUpdateStatus(), 3000);
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Update failed');
 		} finally {
@@ -241,6 +247,12 @@
 		</div>
 	</Card.Header>
 	<Card.Content class="space-y-4 text-sm">
+		{#if $updateError}
+			<Alert.Root variant="destructive">
+				<HugeiconsIcon icon={Alert02Icon} class="size-4" strokeWidth={2} />
+				<Alert.Description>{$updateError}</Alert.Description>
+			</Alert.Root>
+		{/if}
 		<div class="grid gap-3 sm:grid-cols-2">
 			<div class="flex items-center justify-between rounded-lg border border-border/60 p-3">
 				<span class="text-muted-foreground">Current version</span>

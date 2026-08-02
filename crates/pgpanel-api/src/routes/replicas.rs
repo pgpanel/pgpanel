@@ -102,10 +102,11 @@ async fn list_all_replicas(
     State(state): State<AppState>,
     _auth: AuthUser,
 ) -> ApiResult<Json<Vec<ClusterReplica>>> {
-    let rows = sqlx::query_as::<_, ReplicaRow>(&format!("{REPLICA_SELECT} ORDER BY created_at DESC"))
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let rows =
+        sqlx::query_as::<_, ReplicaRow>(&format!("{REPLICA_SELECT} ORDER BY created_at DESC"))
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     Ok(Json(
         rows.into_iter()
             .filter_map(|r| r.into_replica().ok())
@@ -119,9 +120,9 @@ async fn list_cluster_replicas(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<ClusterReplica>>> {
     let _ = load_cluster(&state, id).await?;
-    let rows = sqlx::query_as::<_, ReplicaRow>(
-        &format!("{REPLICA_SELECT} WHERE primary_cluster_id = ? ORDER BY created_at DESC"),
-    )
+    let rows = sqlx::query_as::<_, ReplicaRow>(&format!(
+        "{REPLICA_SELECT} WHERE primary_cluster_id = ? ORDER BY created_at DESC"
+    ))
     .bind(id.to_string())
     .fetch_all(&state.pool)
     .await
@@ -142,12 +143,11 @@ async fn create_replica(
     require_write(&auth)?;
     let _ = load_cluster(&state, id).await?;
 
-    let node_exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM nodes WHERE id = ?")
-            .bind(req.target_node_id.to_string())
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let node_exists: Option<String> = sqlx::query_scalar("SELECT id FROM nodes WHERE id = ?")
+        .bind(req.target_node_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     if node_exists.is_none() {
         return Err(AppError(Error::NotFound("node".into())));
     }
@@ -228,7 +228,8 @@ async fn sync_replica(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_write(&auth)?;
     let row = load_replica(&state, id).await?;
-    let primary_id = Uuid::parse_str(&row.primary_cluster_id).map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let primary_id = Uuid::parse_str(&row.primary_cluster_id)
+        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
 
     let op = state
         .queue
@@ -329,8 +330,8 @@ async fn delete_replica(
     let mut operation_id = None;
     if q.destroy {
         if let Some(ref rcid) = row.replica_cluster_id {
-            let replica_cluster_id = Uuid::parse_str(rcid)
-                .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+            let replica_cluster_id =
+                Uuid::parse_str(rcid).map_err(|e| AppError(Error::Internal(e.to_string())))?;
             let op = state
                 .queue
                 .enqueue(

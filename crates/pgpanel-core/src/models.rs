@@ -415,6 +415,12 @@ pub enum JobType {
     RestoreBackup,
     /// Enforce retention (delete expired backups from storage + DB).
     PruneBackups,
+    /// Copy newly archived WAL segments into panel storage.
+    SyncWal,
+    /// Capture a physical PostgreSQL base backup for PITR.
+    WalBaseBackup,
+    /// Recover a point-in-time bundle from a base backup and WAL.
+    WalPitrRestore,
     CreateDatabase,
     DeleteDatabase,
     RotatePassword,
@@ -446,6 +452,9 @@ impl JobType {
             Self::VerifyBackup => "verify_backup",
             Self::RestoreBackup => "restore_backup",
             Self::PruneBackups => "prune_backups",
+            Self::SyncWal => "sync_wal",
+            Self::WalBaseBackup => "wal_base_backup",
+            Self::WalPitrRestore => "wal_pitr_restore",
             Self::CreateDatabase => "create_database",
             Self::DeleteDatabase => "delete_database",
             Self::RotatePassword => "rotate_password",
@@ -471,6 +480,9 @@ impl JobType {
             "verify_backup" => Some(Self::VerifyBackup),
             "restore_backup" => Some(Self::RestoreBackup),
             "prune_backups" => Some(Self::PruneBackups),
+            "sync_wal" => Some(Self::SyncWal),
+            "wal_base_backup" => Some(Self::WalBaseBackup),
+            "wal_pitr_restore" => Some(Self::WalPitrRestore),
             "create_database" => Some(Self::CreateDatabase),
             "delete_database" => Some(Self::DeleteDatabase),
             "rotate_password" => Some(Self::RotatePassword),

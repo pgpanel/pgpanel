@@ -5,10 +5,13 @@ use std::sync::Arc;
 use tracing::{error, info};
 use uuid::Uuid;
 
+use pgpanel_backup::{
+    collect_segments, enable_archiving, pg_basebackup_tar, query_wal_status, switch_wal,
+    BackupEngine, RunLogicalBackupRequest,
+};
 use pgpanel_core::config::Config;
 use pgpanel_core::crypto::{decrypt_secret, encrypt_secret, generate_password};
 use pgpanel_core::error::{Error, Result};
-use pgpanel_backup::{BackupEngine, RunLogicalBackupRequest};
 use pgpanel_core::models::{
     ClusterStatus, CreateClusterRequest, CreateDatabaseRequest, DatabasusIntegrationStatus,
     DeleteMode, HealthStatus, JobType, Operation,
@@ -42,6 +45,9 @@ impl JobContext {
             JobType::VerifyBackup => self.handle_verify_backup(&op).await,
             JobType::RestoreBackup => self.handle_restore_backup(&op).await,
             JobType::PruneBackups => self.handle_prune_backups(&op).await,
+            JobType::SyncWal => self.handle_sync_wal(&op).await,
+            JobType::WalBaseBackup => self.handle_wal_base_backup(&op).await,
+            JobType::WalPitrRestore => self.handle_wal_pitr_restore(&op).await,
             JobType::CreateDatabase => self.handle_create_database(&op).await,
             JobType::DeleteDatabase => self.handle_delete_database(&op).await,
             JobType::RotatePassword => self.handle_rotate_password(&op).await,
@@ -87,10 +93,7 @@ impl JobContext {
             host.unwrap_or_default()
         };
         let node_uuid = Uuid::parse_str(&nid).unwrap_or_else(|_| NodeRegistry::local_node_id());
-        let docker = self
-            .nodes
-            .client_for_host(node_uuid, Some(&host))
-            .await?;
+        let docker = self.nodes.client_for_host(node_uuid, Some(&host)).await?;
         Ok(self.provisioner.with_docker(docker))
     }
 
@@ -231,7 +234,11 @@ impl JobContext {
                 let password = if let Some(ref p) = spec.password {
                     if let Err(e) = pgpanel_core::crypto::validate_password_strength(p) {
                         self.queue
-                            .append_log(op.id, "warn", &format!("password for {}: {e}", spec.role_name))
+                            .append_log(
+                                op.id,
+                                "warn",
+                                &format!("password for {}: {e}", spec.role_name),
+                            )
                             .await?;
                         generate_password()
                     } else {
@@ -243,7 +250,11 @@ impl JobContext {
 
                 if let Err(e) = roles.create_role(&spec.role_name, &password, None).await {
                     self.queue
-                        .append_log(op.id, "error", &format!("create role {}: {e}", spec.role_name))
+                        .append_log(
+                            op.id,
+                            "error",
+                            &format!("create role {}: {e}", spec.role_name),
+                        )
                         .await?;
                     continue;
                 }
@@ -306,7 +317,10 @@ impl JobContext {
             self.queue
                 .set_progress(op.id, 85, "configuring native backups")
                 .await?;
-            if let Err(e) = self.enable_backup_inner(cluster_id, &names.container_name).await {
+            if let Err(e) = self
+                .enable_backup_inner(cluster_id, &names.container_name)
+                .await
+            {
                 self.queue
                     .append_log(op.id, "warn", &format!("backup setup: {e}"))
                     .await?;
@@ -491,23 +505,21 @@ impl JobContext {
         let now = Utc::now().to_rfc3339();
         let schedule_id = Uuid::new_v4();
         let (retention_days, keep_count, _, schedule_hour) = self.backup_policy().await;
-        let cron_default: String = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = 'backup.cron_default'",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| format!("0 {schedule_hour} * * *"));
-        let compression: i64 = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = 'backup.compression_level'",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v: String| v.parse().ok())
-        .unwrap_or(6);
+        let cron_default: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'backup.cron_default'")
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| format!("0 {schedule_hour} * * *"));
+        let compression: i64 =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'backup.compression_level'")
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v: String| v.parse().ok())
+                .unwrap_or(6);
         let verify_after = sqlx::query_scalar::<_, String>(
             "SELECT value FROM settings WHERE key = 'backup.verify_after'",
         )
@@ -577,6 +589,52 @@ impl JobContext {
         .execute(&self.pool)
         .await
         .ok();
+
+        let wal_default = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'backup.wal_archiving_default'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+        if wal_default {
+            sqlx::query(
+                r#"
+                INSERT INTO wal_streams (
+                    cluster_id, enabled, archive_dir, compress, retention_days, status, created_at, updated_at
+                ) VALUES (?, 1, '/var/lib/postgresql/wal_archive', 1, ?, 'configuring', ?, ?)
+                ON CONFLICT(cluster_id) DO UPDATE SET
+                    enabled = 1, retention_days = excluded.retention_days,
+                    status = 'configuring', updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(cluster_id.to_string())
+            .bind(retention_days)
+            .bind(&now)
+            .bind(&now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Job(format!("WAL default setup: {e}")))?;
+            let _ = self
+                .queue
+                .enqueue(
+                    JobType::SyncWal,
+                    Some(cluster_id),
+                    serde_json::json!({}),
+                    Some(&format!("wal-default-{cluster_id}")),
+                )
+                .await;
+            sqlx::query(
+                "UPDATE backup_integrations SET wal_status = 'configuring', updated_at = ? WHERE cluster_id = ?",
+            )
+            .bind(&now)
+            .bind(cluster_id.to_string())
+            .execute(&self.pool)
+            .await
+            .ok();
+        }
 
         Ok(())
     }
@@ -791,9 +849,7 @@ impl JobContext {
             .ok_or_else(|| Error::NotFound("backup has no storage_key".into()))?;
         let encrypted = row.1 != 0;
 
-        let (username, password) = match self
-            .load_credential_password(cluster_id, "postgres")
-            .await
+        let (username, password) = match self.load_credential_password(cluster_id, "postgres").await
         {
             Ok(pw) => ("postgres".to_string(), pw),
             Err(_) => (
@@ -885,7 +941,388 @@ impl JobContext {
             deleted += 1;
         }
 
-        Ok(serde_json::json!({ "deleted": deleted, "retention_days": retention, "keep_count": keep_count }))
+        Ok(
+            serde_json::json!({ "deleted": deleted, "retention_days": retention, "keep_count": keep_count }),
+        )
+    }
+
+    async fn handle_sync_wal(&self, op: &Operation) -> Result<serde_json::Value> {
+        let cluster_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing cluster_id".into()))?;
+        let stream = sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT enabled, archive_dir, retention_days FROM wal_streams WHERE cluster_id = ?",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("WAL stream".into()))?;
+        if stream.0 == 0 {
+            return Ok(serde_json::json!({"enabled": false, "status": "disabled", "segments": 0}));
+        }
+
+        let _archive_dir = &stream.1;
+        let container: String =
+            sqlx::query_scalar("SELECT docker_container_name FROM clusters WHERE id = ?")
+                .bind(cluster_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+        let password = self.load_admin_password(cluster_id).await?;
+
+        let mut status = match query_wal_status(&container, password.expose_secret()).await {
+            Ok(status) => status,
+            Err(error) => {
+                self.set_wal_error(cluster_id, &error.to_string()).await;
+                return Err(error);
+            }
+        };
+        if status.archive_mode.as_deref() != Some("on") {
+            self.queue
+                .set_progress(op.id, 10, "applying PostgreSQL WAL archive settings")
+                .await?;
+            if let Err(error) = enable_archiving(&container, password.expose_secret()).await {
+                self.set_wal_error(cluster_id, &error.to_string()).await;
+                return Err(error);
+            }
+            let provisioner = self.provisioner_for_cluster(cluster_id).await?;
+            if let Err(error) = provisioner.restart(&container).await {
+                self.set_wal_error(cluster_id, &error.to_string()).await;
+                return Err(error);
+            }
+            if let Err(error) = provisioner.wait_healthy(&container).await {
+                self.set_wal_error(cluster_id, &error.to_string()).await;
+                return Err(error);
+            }
+            status = match query_wal_status(&container, password.expose_secret()).await {
+                Ok(status) => status,
+                Err(error) => {
+                    self.set_wal_error(cluster_id, &error.to_string()).await;
+                    return Err(error);
+                }
+            };
+        }
+        if op
+            .payload
+            .get("switch")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            switch_wal(&container, password.expose_secret()).await?;
+        }
+
+        let wal_root = self
+            .config
+            .backup_data_dir
+            .clone()
+            .unwrap_or_else(|| self.config.data_dir.join("backups"))
+            .join("wal");
+        let segments = match collect_segments(&container, &cluster_id.to_string(), &wal_root).await
+        {
+            Ok(segments) => segments,
+            Err(error) => {
+                self.set_wal_error(cluster_id, &error.to_string()).await;
+                return Err(error);
+            }
+        };
+        let local_cluster_root = wal_root.join(cluster_id.to_string());
+        for segment in &segments {
+            let local_path = local_cluster_root.join(&segment.filename);
+            let bytes = tokio::fs::read(&local_path)
+                .await
+                .map_err(|e| Error::Job(format!("read WAL segment {}: {e}", segment.filename)))?;
+            let storage_key = self
+                .backup
+                .store_wal_segment(&segment.storage_key, &bytes)
+                .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO wal_segments (
+                    id, cluster_id, filename, timeline, size_bytes, archived_at,
+                    synced_at, storage_key, checksum_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cluster_id, filename) DO UPDATE SET
+                    timeline = excluded.timeline,
+                    size_bytes = excluded.size_bytes,
+                    archived_at = excluded.archived_at,
+                    synced_at = excluded.synced_at,
+                    storage_key = excluded.storage_key,
+                    checksum_sha256 = excluded.checksum_sha256
+                "#,
+            )
+            .bind(&segment.id)
+            .bind(cluster_id.to_string())
+            .bind(&segment.filename)
+            .bind(segment.timeline as i64)
+            .bind(segment.size_bytes as i64)
+            .bind(&segment.archived_at)
+            .bind(&segment.synced_at)
+            .bind(&storage_key)
+            .bind(&segment.checksum_sha256)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Job(format!("index WAL segment: {e}")))?;
+        }
+
+        let (count, total): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM wal_segments WHERE cluster_id = ?",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+        let last_segment: Option<String> = sqlx::query_scalar(
+            "SELECT filename FROM wal_segments WHERE cluster_id = ? ORDER BY COALESCE(archived_at, synced_at) DESC LIMIT 1",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        let stream_status = if status.failed_count > 0 {
+            "degraded"
+        } else {
+            "active"
+        };
+        sqlx::query(
+            r#"
+            UPDATE wal_streams
+            SET status = ?, last_segment = ?, last_synced_at = ?, last_error = NULL,
+                timeline = COALESCE(?, timeline), segment_count = ?, total_bytes = ?, updated_at = ?
+            WHERE cluster_id = ?
+            "#,
+        )
+        .bind(stream_status)
+        .bind(&last_segment)
+        .bind(&now)
+        .bind(
+            status
+                .last_archived_wal
+                .as_deref()
+                .and_then(|v| pgpanel_backup::parse_wal_filename(v).ok())
+                .map(|v| v.timeline as i64),
+        )
+        .bind(count)
+        .bind(total)
+        .bind(&now)
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+        sqlx::query(
+            "UPDATE backup_integrations SET wal_status = ?, updated_at = ? WHERE cluster_id = ?",
+        )
+        .bind(stream_status)
+        .bind(&now)
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await
+        .ok();
+
+        Ok(serde_json::json!({
+            "enabled": true,
+            "status": stream_status,
+            "segments_synced": segments.len(),
+            "segment_count": count,
+            "total_bytes": total,
+            "last_segment": last_segment,
+            "archive_mode": status.archive_mode,
+            "wal_level": status.wal_level,
+            "retention_days": stream.2,
+        }))
+    }
+
+    async fn handle_wal_base_backup(&self, op: &Operation) -> Result<serde_json::Value> {
+        let cluster_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing cluster_id".into()))?;
+        let container: String =
+            sqlx::query_scalar("SELECT docker_container_name FROM clusters WHERE id = ?")
+                .bind(cluster_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+        let password = self.load_admin_password(cluster_id).await?;
+        let (_, _, encrypt, _) = self.backup_policy().await;
+        let backup_id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO backups (id, cluster_id, kind, status, database_name, encrypted, started_at, created_at) VALUES (?, ?, 'base_backup', 'running', 'physical', ?, ?, ?)",
+        )
+        .bind(backup_id.to_string())
+        .bind(cluster_id.to_string())
+        .bind(if encrypt { 1 } else { 0 })
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        let result = match pg_basebackup_tar(&container, password.expose_secret()).await {
+            Ok(bytes) => {
+                self.backup
+                    .store_base_backup(cluster_id, &bytes, encrypt)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(stored) => {
+                let finished = Utc::now().to_rfc3339();
+                sqlx::query(
+                    "UPDATE backups SET status = 'succeeded', storage_key = ?, size_bytes = ?, checksum_sha256 = ?, finished_at = ? WHERE id = ?",
+                )
+                .bind(&stored.storage_key)
+                .bind(stored.size_bytes as i64)
+                .bind(&stored.checksum_sha256)
+                .bind(&finished)
+                .bind(backup_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+                Ok(serde_json::json!({
+                    "backup_id": backup_id,
+                    "storage_key": stored.storage_key,
+                    "size_bytes": stored.size_bytes,
+                    "checksum": stored.checksum_sha256,
+                }))
+            }
+            Err(error) => {
+                let finished = Utc::now().to_rfc3339();
+                sqlx::query(
+                    "UPDATE backups SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
+                )
+                .bind(error.to_string())
+                .bind(&finished)
+                .bind(backup_id.to_string())
+                .execute(&self.pool)
+                .await
+                .ok();
+                Err(error)
+            }
+        }
+    }
+
+    async fn handle_wal_pitr_restore(&self, op: &Operation) -> Result<serde_json::Value> {
+        let cluster_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing cluster_id".into()))?;
+        let target_time = op
+            .payload
+            .get("target_time")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Validation("target_time required".into()))?;
+        let target = chrono::DateTime::parse_from_rfc3339(target_time)
+            .map_err(|_| Error::Validation("target_time must be RFC3339".into()))?
+            .with_timezone(&Utc);
+        let base = sqlx::query_as::<_, (String, String, String, i64)>(
+            "SELECT id, storage_key, created_at, encrypted FROM backups WHERE cluster_id = ? AND kind = 'base_backup' AND status IN ('succeeded', 'verified') ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("no successful WAL base backup — take a base backup first".into()))?;
+        if !self.backup.storage_exists(&base.1).await? {
+            return Err(Error::NotFound("base backup object is unavailable".into()));
+        }
+        let wal_rows: Vec<(String, String, i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT filename, storage_key, size_bytes, archived_at, checksum_sha256 FROM wal_segments WHERE cluster_id = ? AND COALESCE(archived_at, synced_at) >= ? AND COALESCE(archived_at, synced_at) <= ? ORDER BY timeline, filename",
+        )
+        .bind(cluster_id.to_string())
+        .bind(&base.2)
+        .bind(target.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+        if wal_rows.is_empty() {
+            return Err(Error::Validation(
+                "no WAL segments found between the latest base backup and the target time — sync WAL and try again".into(),
+            ));
+        }
+
+        let restore_command =
+            "cp /var/lib/postgresql/wal_archive/%f %p".to_string();
+        let recovery_conf = format!(
+            "# Generated by PgPanel PITR\n\
+             restore_command = '{restore_command}'\n\
+             recovery_target_time = '{target}'\n\
+             recovery_target_action = 'promote'\n",
+            target = target.to_rfc3339()
+        );
+        let auto_conf = format!(
+            "# Generated by PgPanel PITR\n\
+             restore_command = '{restore_command}'\n\
+             recovery_target_time = '{target}'\n\
+             recovery_target_action = 'promote'\n",
+            target = target.to_rfc3339()
+        );
+
+        let manifest = serde_json::json!({
+            "format": "pgpanel-pitr-manifest-v1",
+            "cluster_id": cluster_id,
+            "target_time": target.to_rfc3339(),
+            "base_backup": {
+                "id": base.0,
+                "storage_key": base.1,
+                "encrypted": base.3 != 0,
+                "created_at": base.2,
+            },
+            "wal_segments": wal_rows.iter().map(|row| serde_json::json!({
+                "filename": row.0,
+                "storage_key": row.1,
+                "size_bytes": row.2,
+                "archived_at": row.3,
+                "checksum_sha256": row.4,
+            })).collect::<Vec<_>>(),
+            "recovery_conf": recovery_conf,
+            "postgresql_auto_conf": auto_conf,
+            "steps": [
+                "1. Extract the base backup tar into an empty PostgreSQL data directory",
+                "2. Copy the listed WAL segment objects into wal_archive/",
+                "3. Write recovery.signal (empty) and postgresql.auto.conf from this manifest",
+                "4. Start PostgreSQL — it will recover to recovery_target_time then promote",
+            ],
+        });
+        let key = format!(
+            "pitr/{cluster_id}/recovery_{}.json",
+            Utc::now().format("%Y%m%dT%H%M%SZ")
+        );
+        let storage_key = self
+            .backup
+            .store_manifest(&key, manifest.to_string().as_bytes())
+            .await?;
+
+        let backup_id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO backups (
+                id, cluster_id, kind, status, database_name, storage_key,
+                size_bytes, checksum_sha256, encrypted, started_at, finished_at, created_at
+            ) VALUES (?, ?, 'pitr_bundle', 'succeeded', 'postgres', ?, ?, NULL, 0, ?, ?, ?)
+            "#,
+        )
+        .bind(backup_id.to_string())
+        .bind(cluster_id.to_string())
+        .bind(&storage_key)
+        .bind(manifest.to_string().len() as i64)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        Ok(serde_json::json!({
+            "manifest_storage_key": storage_key,
+            "backup_id": backup_id,
+            "target_time": target,
+            "wal_segments": wal_rows.len(),
+            "recoverable": true,
+            "message": "PITR recovery package ready — download the manifest from backup history and follow the steps",
+        }))
     }
 
     async fn handle_ping_node(&self, op: &Operation) -> Result<serde_json::Value> {
@@ -907,7 +1344,9 @@ impl JobContext {
         let host = if row.0 == "local" {
             None
         } else if row.2 != 0 {
-            let enc = row.1.ok_or_else(|| Error::Internal("missing docker_host".into()))?;
+            let enc = row
+                .1
+                .ok_or_else(|| Error::Internal("missing docker_host".into()))?;
             let plain = decrypt_secret(&self.config.master_encryption_key, &enc)?;
             Some(plain.expose_secret().to_string())
         } else {
@@ -1345,7 +1784,9 @@ impl JobContext {
                 .await
                 .map_err(|e| Error::Job(e.to_string()))?;
 
-        let storage_key: String = if let Some(k) = op.payload.get("storage_key").and_then(|v| v.as_str()) {
+        let storage_key: String = if let Some(k) =
+            op.payload.get("storage_key").and_then(|v| v.as_str())
+        {
             k.to_string()
         } else {
             sqlx::query_scalar(
@@ -1644,6 +2085,26 @@ impl JobContext {
             .await
             .map_err(|e| Error::Job(e.to_string()))?;
         Ok(())
+    }
+
+    async fn set_wal_error(&self, cluster_id: Uuid, message: &str) {
+        let now = Utc::now().to_rfc3339();
+        let _ = sqlx::query(
+            "UPDATE wal_streams SET status = 'error', last_error = ?, updated_at = ? WHERE cluster_id = ?",
+        )
+        .bind(message)
+        .bind(&now)
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query(
+            "UPDATE backup_integrations SET wal_status = 'error', message = ?, updated_at = ? WHERE cluster_id = ?",
+        )
+        .bind(message)
+        .bind(&now)
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await;
     }
 
     async fn set_health(&self, id: Uuid, health: HealthStatus) -> Result<()> {

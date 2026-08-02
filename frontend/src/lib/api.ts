@@ -515,6 +515,57 @@ export interface Operation {
 	updated_at: string;
 }
 
+export interface WalPgStatus {
+	archive_mode: string | null;
+	wal_level: string | null;
+	last_archived_wal: string | null;
+	failed_count: number;
+	message: string | null;
+}
+
+export interface WalStreamStatus {
+	enabled: boolean;
+	status: string;
+	archive_dir: string | null;
+	retention_days: number;
+	last_segment: string | null;
+	last_synced_at: string | null;
+	segment_count: number;
+	total_bytes: number;
+	timeline: string | null;
+	pg: WalPgStatus;
+	searchable: boolean;
+}
+
+export interface WalSegment {
+	id: string;
+	filename: string;
+	timeline: string;
+	size_bytes: number;
+	archived_at: string | null;
+	synced_at: string | null;
+	checksum_sha256: string | null;
+}
+
+export interface WalSegmentsResponse {
+	segments: WalSegment[];
+	total?: number;
+}
+
+export interface WalEnableRequest {
+	retention_days?: number;
+	compress?: boolean;
+}
+
+export interface WalPitrRequest {
+	target_time: string;
+	confirm_cluster_name: string;
+}
+
+export interface OperationIdResponse {
+	operation_id: string;
+}
+
 export interface DatabaseRecord {
 	id: string;
 	name: string;

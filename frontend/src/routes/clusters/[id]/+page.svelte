@@ -57,7 +57,8 @@
 		{ href: `/clusters/${id}/databases`, label: 'Databases', icon: DatabaseIcon },
 		{ href: `/clusters/${id}/browser`, label: 'Browser', icon: TableIcon },
 		{ href: `/clusters/${id}/query`, label: 'SQL console', icon: CodeIcon },
-		{ href: `/clusters/${id}/backup`, label: 'Backup', icon: CloudBackupIcon },
+		{ href: `/clusters/${id}/backup`, label: 'Backups', icon: CloudBackupIcon },
+		{ href: `/clusters/${id}/backup?tab=wal`, label: 'WAL / PITR', icon: DatabaseSyncIcon },
 		{ href: `/replicas?cluster=${id}`, label: 'Replicas', icon: DatabaseSyncIcon }
 	]);
 </script>

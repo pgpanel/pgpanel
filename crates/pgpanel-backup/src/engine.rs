@@ -202,6 +202,64 @@ impl BackupEngine {
         })
     }
 
+    /// Store a physical base backup produced by `pg_basebackup`.
+    pub async fn store_base_backup(
+        &self,
+        cluster_id: Uuid,
+        raw: &[u8],
+        encrypt: bool,
+    ) -> Result<PhysicalBackupResult> {
+        let backup_id = Uuid::new_v4();
+        let started = Utc::now();
+        let payload = if encrypt {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+            let encrypted = encrypt_secret(
+                &self.config.master_encryption_key,
+                &SecretString::from(encoded),
+            )?;
+            format!("enc:v1:{encrypted}").into_bytes()
+        } else {
+            raw.to_vec()
+        };
+        let checksum = hex::encode(Sha256::digest(&payload));
+        let key = format!(
+            "base/{cluster_id}/base_{}.tar.gz{}",
+            started.format("%Y%m%dT%H%M%SZ"),
+            if encrypt { ".enc" } else { "" }
+        );
+        let storage = self.storage.read().await.clone();
+        let storage_key = storage.put(&key, &payload).await?;
+        Ok(PhysicalBackupResult {
+            backup_id,
+            storage_key,
+            size_bytes: payload.len() as u64,
+            checksum_sha256: checksum,
+            encrypted: encrypt,
+        })
+    }
+
+    /// Store one WAL segment and return the backend's canonical key.
+    pub async fn store_wal_segment(&self, storage_key: &str, data: &[u8]) -> Result<String> {
+        let storage = self.storage.read().await.clone();
+        storage.put(storage_key, data).await
+    }
+
+    pub async fn store_manifest(&self, storage_key: &str, manifest: &[u8]) -> Result<String> {
+        let storage = self.storage.read().await.clone();
+        storage.put(storage_key, manifest).await
+    }
+
+    pub async fn storage_exists(&self, storage_key: &str) -> Result<bool> {
+        let storage = self.storage.read().await.clone();
+        storage.exists(storage_key).await
+    }
+
+    pub async fn get_object(&self, storage_key: &str) -> Result<Vec<u8>> {
+        let storage = self.storage.read().await.clone();
+        storage.get(storage_key).await
+    }
+
     pub async fn load_raw_dump(&self, storage_key: &str, encrypted: bool) -> Result<Vec<u8>> {
         let storage = self.storage.read().await.clone();
         let mut data = storage.get(storage_key).await?;

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { updateStatus, checkForUpdates, updateChecking } from '$lib/updates';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -31,7 +32,12 @@
 					<HugeiconsIcon icon={RefreshIcon} class="size-3.5" strokeWidth={2} />
 					{$updateChecking ? 'Checking…' : 'Recheck'}
 				</Button>
-				<Button size="sm" href="/settings#updates">Update in Settings</Button>
+				<Button
+					size="sm"
+					onclick={() => goto('/settings#updates')}
+				>
+					Update in Settings
+				</Button>
 			</div>
 		</div>
 	{/if}

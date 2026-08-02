@@ -58,10 +58,7 @@ impl UserRow {
             display_name: self.display_name,
             enabled: self.enabled != 0,
             created_at: parse_dt(&self.created_at),
-            last_login_at: self
-                .last_login_at
-                .as_ref()
-                .map(|s| parse_dt(s)),
+            last_login_at: self.last_login_at.as_ref().map(|s| parse_dt(s)),
         })
     }
 }
@@ -79,12 +76,11 @@ fn is_valid_email(email: &str) -> bool {
 }
 
 async fn count_owners(state: &AppState) -> Result<i64, AppError> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE role = 'owner' AND enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| AppError(Error::Internal(e.to_string())))?;
     Ok(n)
 }
 
@@ -97,10 +93,7 @@ fn ensure_role_assignable(actor: &User, role: UserRole) -> Result<(), AppError> 
     Ok(())
 }
 
-async fn list_users(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> ApiResult<Json<Vec<User>>> {
+async fn list_users(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<Vec<User>>> {
     require_admin(&auth)?;
     let rows = sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} ORDER BY username"))
         .fetch_all(&state.pool)
@@ -325,7 +318,9 @@ async fn delete_user(
     require_admin(&auth)?;
 
     if auth.user.id == id {
-        return Err(AppError(Error::Validation("cannot delete your own account".into())));
+        return Err(AppError(Error::Validation(
+            "cannot delete your own account".into(),
+        )));
     }
 
     let existing = sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE id = ?"))
@@ -336,7 +331,9 @@ async fn delete_user(
         .ok_or_else(|| AppError(Error::NotFound("user".into())))?;
 
     if existing.role == "owner" && count_owners(&state).await? <= 1 {
-        return Err(AppError(Error::Conflict("cannot delete the last owner".into())));
+        return Err(AppError(Error::Conflict(
+            "cannot delete the last owner".into(),
+        )));
     }
 
     let res = sqlx::query("DELETE FROM users WHERE id = ?")

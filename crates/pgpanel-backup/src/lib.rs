@@ -12,7 +12,11 @@ pub use engine::BackupEngine;
 pub use notify::notify_webhook;
 pub use storage::{LocalStorage, S3Storage, S3StorageConfig, StorageBackend};
 pub use types::*;
-pub use wal::{archive_settings_sql, WalConfig, WalStatus};
+pub use wal::{
+    archive_settings_sql, collect_segments, enable_archiving, parse_wal_filename,
+    pg_basebackup_tar, query_wal_status, switch_wal, WalConfig, WalFilename, WalSegmentMetadata,
+    WalStatus,
+};
 
 use pgpanel_core::config::Config;
 use std::path::PathBuf;

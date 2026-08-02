@@ -24,7 +24,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/alerts/{id}/ack", post(ack_alert))
         .route("/api/alerts/{id}/resolve", post(resolve_alert))
         .route("/api/alert-rules", get(list_alert_rules))
-        .route("/api/alert-rules/{id}", axum::routing::put(update_alert_rule))
+        .route(
+            "/api/alert-rules/{id}",
+            axum::routing::put(update_alert_rule),
+        )
 }
 
 fn parse_dt(s: &str) -> chrono::DateTime<Utc> {
@@ -41,31 +44,27 @@ async fn monitoring_overview(
     let hours = query.hours.unwrap_or(24).clamp(1, 168);
     let since = (Utc::now() - Duration::hours(hours)).to_rfc3339();
 
-    let cluster_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM clusters")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let cluster_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clusters")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
     let healthy_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM clusters WHERE status IN ('healthy', 'healthy_with_backup_warning')",
     )
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
-    let open_alerts: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM alerts WHERE status = 'open'",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let open_alerts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alerts WHERE status = 'open'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
 
-    let avg_cpu: f64 = sqlx::query_scalar(
-        "SELECT AVG(cpu_percent) FROM cluster_metrics WHERE collected_at >= ?",
-    )
-    .bind(&since)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0.0);
+    let avg_cpu: f64 =
+        sqlx::query_scalar("SELECT AVG(cpu_percent) FROM cluster_metrics WHERE collected_at >= ?")
+            .bind(&since)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0.0);
     let avg_memory_mb: f64 = sqlx::query_scalar(
         "SELECT AVG(memory_usage_mb) FROM cluster_metrics WHERE collected_at >= ?",
     )
@@ -73,16 +72,54 @@ async fn monitoring_overview(
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0.0);
-    let max_cpu_24h: f64 = sqlx::query_scalar("SELECT COALESCE(MAX(cpu_percent),0) FROM cluster_metrics WHERE collected_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0.0);
-    let max_memory_mb_24h: f64 = sqlx::query_scalar("SELECT COALESCE(MAX(memory_usage_mb),0) FROM cluster_metrics WHERE collected_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0.0);
-    let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes").fetch_one(&state.pool).await.unwrap_or(0);
-    let online_nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE status = 'online'").fetch_one(&state.pool).await.unwrap_or(0);
-    let operations_failed_24h: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE status IN ('failed','error') AND created_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0);
-    let operations_running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE status IN ('running','pending')").fetch_one(&state.pool).await.unwrap_or(0);
-    let databases_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM databases").fetch_one(&state.pool).await.unwrap_or(0);
+    let max_cpu_24h: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(cpu_percent),0) FROM cluster_metrics WHERE collected_at >= ?",
+    )
+    .bind(&since)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0.0);
+    let max_memory_mb_24h: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(memory_usage_mb),0) FROM cluster_metrics WHERE collected_at >= ?",
+    )
+    .bind(&since)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0.0);
+    let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
+    let online_nodes: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE status = 'online'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+    let operations_failed_24h: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operations WHERE status IN ('failed','error') AND created_at >= ?",
+    )
+    .bind(&since)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+    let operations_running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE status IN ('running','pending')")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+    let databases_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM databases")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
 
     #[derive(sqlx::FromRow)]
-    struct NodeRow { node_id: String, name: String, cluster_count: i64, avg_cpu: f64, status: String }
+    struct NodeRow {
+        node_id: String,
+        name: String,
+        cluster_count: i64,
+        avg_cpu: f64,
+        status: String,
+    }
     let nodes = sqlx::query_as::<_, NodeRow>(
         "SELECT n.id AS node_id, n.name, COUNT(DISTINCT c.id) AS cluster_count, COALESCE(AVG(m.cpu_percent),0) AS avg_cpu, n.status FROM nodes n LEFT JOIN clusters c ON c.node_id=n.id LEFT JOIN cluster_metrics m ON m.cluster_id=c.id AND m.collected_at >= ? GROUP BY n.id, n.name, n.status ORDER BY n.name"
     ).bind(&since).fetch_all(&state.pool).await.unwrap_or_default().into_iter().map(|n| NodeMonitoringRow { node_id:n.node_id, name:n.name, cluster_count:n.cluster_count, avg_cpu:n.avg_cpu, status:n.status }).collect();
@@ -102,14 +139,17 @@ async fn monitoring_overview(
     .await
     .unwrap_or(0);
     let backup_total = backups_last_24h + failed_backups_24h;
-    let backup_success_rate = if backup_total == 0 { 1.0 } else { backups_last_24h as f64 / backup_total as f64 };
+    let backup_success_rate = if backup_total == 0 {
+        1.0
+    } else {
+        backups_last_24h as f64 / backup_total as f64
+    };
 
-    let replica_total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let replica_total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
     let replica_healthy: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1 AND status = 'healthy'",
     )
@@ -176,13 +216,15 @@ async fn monitoring_overview(
     let top_clusters: Vec<ClusterLoadRow> = top_rows
         .into_iter()
         .filter_map(|r| {
-            Uuid::parse_str(&r.cluster_id).ok().map(|cid| ClusterLoadRow {
-                cluster_id: cid,
-                name: r.name,
-                cpu_percent: r.cpu_percent,
-                memory_usage_mb: r.memory_usage_mb,
-                status: r.status,
-            })
+            Uuid::parse_str(&r.cluster_id)
+                .ok()
+                .map(|cid| ClusterLoadRow {
+                    cluster_id: cid,
+                    name: r.name,
+                    cpu_percent: r.cpu_percent,
+                    memory_usage_mb: r.memory_usage_mb,
+                    status: r.status,
+                })
         })
         .collect();
 
@@ -222,7 +264,8 @@ async fn cluster_monitoring(
     Query(query): Query<MonitoringQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let cluster = load_cluster(&state, id).await?;
-    let since = (Utc::now() - Duration::hours(query.hours.unwrap_or(24).clamp(1, 168))).to_rfc3339();
+    let since =
+        (Utc::now() - Duration::hours(query.hours.unwrap_or(24).clamp(1, 168))).to_rfc3339();
 
     #[derive(sqlx::FromRow, serde::Serialize)]
     struct MetricSample {
@@ -299,10 +342,7 @@ impl AlertRow {
     fn into_alert(self) -> Result<Alert, Error> {
         Ok(Alert {
             id: Uuid::parse_str(&self.id).map_err(|e| Error::Internal(e.to_string()))?,
-            rule_id: self
-                .rule_id
-                .as_ref()
-                .and_then(|s| Uuid::parse_str(s).ok()),
+            rule_id: self.rule_id.as_ref().and_then(|s| Uuid::parse_str(s).ok()),
             severity: self.severity,
             title: self.title,
             message: self.message,

@@ -93,6 +93,99 @@ impl DockerClient {
     /// Best-effort restart of the running panel compose service after a pull.
     /// Returns true if a matching container was restarted.
     pub async fn restart_panel_container(&self) -> Result<bool> {
+        let id = self.find_panel_container_id().await?;
+        let Some(id) = id else {
+            return Ok(false);
+        };
+        info!(%id, "restarting panel container after update pull");
+        self.docker
+            .restart_container(&id, None::<RestartContainerOptions>)
+            .await
+            .map_err(|e| Error::Docker(format!("restart panel: {e}")))?;
+        Ok(true)
+    }
+
+    /// Pull a new panel image and recreate the running panel container with it.
+    pub async fn upgrade_panel_image(&self, new_image: &str) -> Result<()> {
+        self.pull_panel_image(new_image).await?;
+        let _ = self
+            .pull_panel_image("ghcr.io/pgpanel/pgpanel:latest")
+            .await;
+        if !self.recreate_panel_container(new_image).await? {
+            return Err(Error::Docker(
+                "panel container not found — run: sudo pgpanel update".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recreate the panel container from its current inspect config with a new image.
+    pub async fn recreate_panel_container(&self, new_image: &str) -> Result<bool> {
+        let id = self.find_panel_container_id().await?;
+        let Some(id) = id else {
+            return Ok(false);
+        };
+
+        let inspect = self
+            .docker
+            .inspect_container(&id, None)
+            .await
+            .map_err(|e| Error::Docker(format!("inspect panel: {e}")))?;
+
+        let name = inspect
+            .name
+            .as_ref()
+            .map(|n| n.trim_start_matches('/').to_string())
+            .filter(|n| !n.is_empty());
+
+        let network_names: Vec<String> = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.networks.as_ref())
+            .map(|nets| nets.keys().cloned().collect())
+            .unwrap_or_default();
+
+        let container_config = inspect.config.clone().unwrap_or_default();
+
+        let create_config = Config {
+            image: Some(new_image.to_string()),
+            env: container_config.env,
+            labels: container_config.labels,
+            hostname: container_config.hostname,
+            exposed_ports: container_config.exposed_ports,
+            healthcheck: container_config.healthcheck,
+            host_config: inspect.host_config.clone(),
+            ..Default::default()
+        };
+
+        self.stop_container(&id, 10).await?;
+        self.remove_container(&id, true).await?;
+
+        let options = CreateContainerOptions {
+            name: name.as_deref().unwrap_or_default(),
+            platform: None,
+        };
+
+        info!(image = %new_image, container = ?name, "recreating panel container");
+        let response = self
+            .docker
+            .create_container(Some(options), create_config)
+            .await
+            .map_err(|e| Error::Docker(format!("recreate panel: {e}")))?;
+
+        let new_id = response.id;
+        self.start_container(&new_id).await?;
+
+        for net in network_names {
+            if net != "bridge" {
+                self.connect_network(&net, &new_id).await?;
+            }
+        }
+
+        Ok(true)
+    }
+
+    async fn find_panel_container_id(&self) -> Result<Option<String>> {
         let opts = ListContainersOptions::<String> {
             all: false,
             filters: HashMap::from([(
@@ -134,18 +227,7 @@ impl DockerClient {
                 .collect();
         }
 
-        let Some(container) = found.into_iter().next() else {
-            return Ok(false);
-        };
-        let id = container
-            .id
-            .ok_or_else(|| Error::Docker("panel container missing id".into()))?;
-        info!(%id, "restarting panel container after update pull");
-        self.docker
-            .restart_container(&id, None::<RestartContainerOptions>)
-            .await
-            .map_err(|e| Error::Docker(format!("restart panel: {e}")))?;
-        Ok(true)
+        Ok(found.into_iter().next().and_then(|c| c.id))
     }
 
     pub async fn create_volume(&self, name: &str, labels: HashMap<String, String>) -> Result<()> {

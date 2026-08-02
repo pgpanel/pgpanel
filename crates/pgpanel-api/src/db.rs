@@ -34,6 +34,9 @@ pub async fn connect_and_migrate(database_url: &str) -> anyhow::Result<SqlitePoo
             let _ = sqlx::raw_sql(include_str!("../../../migrations/003_admin_email.sql"))
                 .execute(&pool)
                 .await;
+            let _ = sqlx::raw_sql(include_str!("../../../migrations/007_wal_streaming.sql"))
+                .execute(&pool)
+                .await;
         }
     }
 

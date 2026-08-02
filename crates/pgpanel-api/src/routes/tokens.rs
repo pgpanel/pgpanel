@@ -195,11 +195,15 @@ async fn revoke_token(
     .ok_or_else(|| AppError(Error::NotFound("api token".into())))?;
 
     if !auth.user.role.can_admin() && row.user_id != auth.user.id.to_string() {
-        return Err(AppError(Error::Forbidden("cannot revoke this token".into())));
+        return Err(AppError(Error::Forbidden(
+            "cannot revoke this token".into(),
+        )));
     }
 
     if row.revoked_at.is_some() {
-        return Ok(Json(serde_json::json!({"ok": true, "already_revoked": true})));
+        return Ok(Json(
+            serde_json::json!({"ok": true, "already_revoked": true}),
+        ));
     }
 
     let now = Utc::now().to_rfc3339();

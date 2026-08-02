@@ -18,11 +18,11 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/waf/policies", get(list_policies).post(create_policy))
+        .route("/api/waf/policies/{id}", get(get_policy).put(update_policy))
         .route(
-            "/api/waf/policies/{id}",
-            get(get_policy).put(update_policy),
+            "/api/waf/policies/{id}/activate",
+            axum::routing::post(activate_policy),
         )
-        .route("/api/waf/policies/{id}/activate", axum::routing::post(activate_policy))
         .route("/api/waf/active", get(get_active))
         .route("/api/waf/changes", get(list_changes))
         .route("/api/waf/policies/{id}/changes", get(list_policy_changes))
@@ -50,8 +50,7 @@ fn parse_dt(s: &str) -> chrono::DateTime<Utc> {
 
 impl PolicyRow {
     fn into_policy(self) -> Result<WafPolicy, Error> {
-        let config: WafPolicyConfig =
-            serde_json::from_str(&self.config_json).unwrap_or_default();
+        let config: WafPolicyConfig = serde_json::from_str(&self.config_json).unwrap_or_default();
         Ok(WafPolicy {
             id: Uuid::parse_str(&self.id).map_err(|e| Error::Internal(e.to_string()))?,
             name: self.name,
@@ -99,10 +98,7 @@ async fn get_policy(
     Ok(Json(row.into_policy().map_err(AppError)?))
 }
 
-async fn get_active(
-    State(state): State<AppState>,
-    _auth: AuthUser,
-) -> ApiResult<Json<WafPolicy>> {
+async fn get_active(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<WafPolicy>> {
     let row = sqlx::query_as::<_, PolicyRow>(
         "SELECT id, name, enabled, is_active, version, config_json, notes, created_at, updated_at FROM waf_policies WHERE is_active = 1 LIMIT 1",
     )
@@ -209,7 +205,10 @@ async fn update_policy(
 
     let new_version = existing.version + 1;
     let after = serde_json::to_string(&body.config).unwrap_or_else(|_| "{}".into());
-    let enabled = body.enabled.map(|b| if b { 1 } else { 0 }).unwrap_or(existing.enabled);
+    let enabled = body
+        .enabled
+        .map(|b| if b { 1 } else { 0 })
+        .unwrap_or(existing.enabled);
     let notes = body.notes.or(existing.notes);
     let now = Utc::now().to_rfc3339();
 
@@ -369,9 +368,7 @@ impl ChangeRow {
             version_to: self.version_to.max(0) as u32,
             actor_username: self.actor_username,
             change_summary: self.change_summary,
-            before_json: self
-                .before_json
-                .and_then(|s| serde_json::from_str(&s).ok()),
+            before_json: self.before_json.and_then(|s| serde_json::from_str(&s).ok()),
             after_json: serde_json::from_str(&self.after_json)
                 .unwrap_or_else(|_| serde_json::json!({})),
             reason: self.reason,
@@ -463,8 +460,15 @@ fn render_caddy_snippet(cfg: &WafPolicyConfig) -> String {
     }
     for ip in &cfg.denied_ips {
         if !ip.is_empty() {
-            lines.push(format!("@deny_{} remote_ip {}", ip.replace(['.', ':'], "_"), ip));
-            lines.push(format!("respond @deny_{} \"Forbidden\" 403", ip.replace(['.', ':'], "_")));
+            lines.push(format!(
+                "@deny_{} remote_ip {}",
+                ip.replace(['.', ':'], "_"),
+                ip
+            ));
+            lines.push(format!(
+                "respond @deny_{} \"Forbidden\" 403",
+                ip.replace(['.', ':'], "_")
+            ));
         }
     }
     if !cfg.allowed_ips.is_empty() {
@@ -563,13 +567,12 @@ async fn record_change(
 
 /// Load active WAF config into memory at startup.
 pub async fn load_active_waf(pool: &sqlx::SqlitePool) -> WafPolicyConfig {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT config_json FROM waf_policies WHERE is_active = 1 LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+    let json: Option<String> =
+        sqlx::query_scalar("SELECT config_json FROM waf_policies WHERE is_active = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
     json.and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
