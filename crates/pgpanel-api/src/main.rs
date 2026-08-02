@@ -19,8 +19,8 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use pgpanel_backup::build_engine;
 use pgpanel_core::config::Config;
-use pgpanel_databasus::build_adapter;
 use pgpanel_docker::{ClusterProvisioner, DockerClient};
 use pgpanel_jobs::{JobContext, JobQueue, JobWorker};
 
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let provisioner = ClusterProvisioner::new(docker.clone(), config.clone());
-    let databasus = build_adapter(&config);
+    let backup = build_engine(&config);
     let queue = JobQueue::new(pool.clone());
 
     let job_ctx = Arc::new(JobContext {
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         pool: pool.clone(),
         config: config.clone(),
         provisioner: ClusterProvisioner::new(docker, config.clone()),
-        databasus: databasus.clone(),
+        backup: backup.clone(),
     });
 
     // Spawn background worker
@@ -76,12 +76,23 @@ async fn main() -> anyhow::Result<()> {
         worker.run().await;
     });
 
+    // Periodic metrics + scheduled backups (every 60s check)
+    let sched_ctx = job_ctx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            if let Err(e) = run_backup_scheduler_tick(&sched_ctx).await {
+                tracing::warn!(error = %e, "backup scheduler tick");
+            }
+        }
+    });
+
     let state = AppState {
         pool,
         config: config.clone(),
         queue,
         provisioner,
-        databasus,
+        backup,
         job_ctx,
     };
 
@@ -111,6 +122,44 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+/// Enqueue due backup schedules (simple daily/cron hour match — MVP).
+async fn run_backup_scheduler_tick(ctx: &JobContext) -> anyhow::Result<()> {
+    use chrono::Timelike;
+    let hour = chrono::Utc::now().hour();
+    // Default cron `0 3 * * *` → run around 03:00 UTC
+    if hour != 3 {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT cluster_id, database_name FROM backup_schedules
+        WHERE enabled = 1
+          AND (last_run_at IS NULL OR date(last_run_at) < date('now'))
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+
+    for (cluster_id, database) in rows {
+        let id = uuid::Uuid::parse_str(&cluster_id)?;
+        let _ = ctx
+            .queue
+            .enqueue(
+                pgpanel_core::models::JobType::RunBackup,
+                Some(id),
+                serde_json::json!({"database": database}),
+                Some(&format!("sched-backup-{cluster_id}-{}", chrono::Utc::now().date_naive())),
+            )
+            .await;
+        let _ = sqlx::query("UPDATE backup_schedules SET last_run_at = ? WHERE cluster_id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(&cluster_id)
+            .execute(&ctx.pool)
+            .await;
+    }
     Ok(())
 }
 

@@ -146,6 +146,15 @@ pub struct Cluster {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct InitialDatabaseSpec {
+    pub database_name: String,
+    pub role_name: String,
+    /// If omitted, a strong password is generated.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateClusterRequest {
     pub name: String,
     /// "16", "17", or "18"
@@ -158,6 +167,9 @@ pub struct CreateClusterRequest {
     pub optional_public_port: Option<u16>,
     #[serde(default)]
     pub enable_backup: bool,
+    /// Databases + non-superuser roles created after the cluster is healthy.
+    #[serde(default)]
+    pub initial_databases: Vec<InitialDatabaseSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -387,11 +399,18 @@ pub enum JobType {
     StopCluster,
     RestartCluster,
     DeleteCluster,
-    RegisterDatabasus,
+    /// Configure native backup for a cluster (replaces Databasus register).
+    EnableBackup,
+    /// Run a logical pg_dump backup now.
+    RunBackup,
+    /// Verify last backup with pg_restore -l.
+    VerifyBackup,
     CreateDatabase,
     DeleteDatabase,
     RotatePassword,
     RefreshMetrics,
+    /// @deprecated kept for queued jobs from older panel versions
+    RegisterDatabasus,
 }
 
 impl JobType {
@@ -402,11 +421,14 @@ impl JobType {
             Self::StopCluster => "stop_cluster",
             Self::RestartCluster => "restart_cluster",
             Self::DeleteCluster => "delete_cluster",
-            Self::RegisterDatabasus => "register_databasus",
+            Self::EnableBackup => "enable_backup",
+            Self::RunBackup => "run_backup",
+            Self::VerifyBackup => "verify_backup",
             Self::CreateDatabase => "create_database",
             Self::DeleteDatabase => "delete_database",
             Self::RotatePassword => "rotate_password",
             Self::RefreshMetrics => "refresh_metrics",
+            Self::RegisterDatabasus => "register_databasus",
         }
     }
 
@@ -417,7 +439,9 @@ impl JobType {
             "stop_cluster" => Some(Self::StopCluster),
             "restart_cluster" => Some(Self::RestartCluster),
             "delete_cluster" => Some(Self::DeleteCluster),
-            "register_databasus" => Some(Self::RegisterDatabasus),
+            "enable_backup" | "register_databasus" => Some(Self::EnableBackup),
+            "run_backup" => Some(Self::RunBackup),
+            "verify_backup" => Some(Self::VerifyBackup),
             "create_database" => Some(Self::CreateDatabase),
             "delete_database" => Some(Self::DeleteDatabase),
             "rotate_password" => Some(Self::RotatePassword),

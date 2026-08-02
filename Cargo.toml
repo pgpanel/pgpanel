@@ -5,6 +5,7 @@ members = [
     "crates/pgpanel-core",
     "crates/pgpanel-docker",
     "crates/pgpanel-postgres",
+    "crates/pgpanel-backup",
     "crates/pgpanel-databasus",
     "crates/pgpanel-jobs",
 ]

@@ -37,7 +37,11 @@ pub enum Error {
     #[error("postgres error: {0}")]
     Postgres(String),
 
-    #[error("databasus error: {0}")]
+    #[error("backup error: {0}")]
+    Backup(String),
+
+    /// Legacy alias used during Databasus removal — maps to Backup.
+    #[error("backup error: {0}")]
     Databasus(String),
 
     #[error("crypto error: {0}")]
@@ -89,7 +93,7 @@ impl Error {
             Self::ClusterState(_) => "cluster_state_error",
             Self::Docker(_) => "docker_error",
             Self::Postgres(_) => "postgres_error",
-            Self::Databasus(_) => "databasus_error",
+            Self::Backup(_) | Self::Databasus(_) => "backup_error",
             Self::Crypto(_) => "crypto_error",
             Self::Job(_) => "job_error",
             Self::SqlConsole(_) => "sql_console_error",

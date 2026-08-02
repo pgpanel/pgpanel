@@ -1,6 +1,7 @@
 # PgPanel production stack
 # Panel image is pre-built (GHCR). VPS does NOT compile Rust/frontend by default.
 # PostgreSQL clusters are created dynamically by the panel — not listed here.
+# Backups: native engine inside the panel (no Databasus service).
 #
 # SECURITY: panel mounts Docker socket (host-root equivalent). See SECURITY.md.
 
@@ -32,7 +33,6 @@ services:
       - "443:443"
     environment:
       PGPANEL_DOMAIN: ${PGPANEL_DOMAIN:-}
-      DATABASUS_DOMAIN: ${DATABASUS_DOMAIN:-}
       CADDY_EMAIL: ${CADDY_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -71,14 +71,15 @@ services:
       PGPANEL_STATIC_DIR: /app/static
       PGPANEL_DATABASE_URL: sqlite:///var/lib/pgpanel/panel.db?mode=rwc
       DOCKER_HOST: unix:///var/run/docker.sock
-      DATABASUS_BASE_URL: ${DATABASUS_BASE_URL:-http://databasus:8000}
-      # Dual-home PG clusters here so panel resolves pgpanel_pg_* hostnames.
       PGPANEL_MANAGEMENT_NETWORK: ${PGPANEL_MANAGEMENT_NETWORK:-pgpanel_database_management}
-      # Off by default — no invented Databasus provisioning HTTP paths.
-      DATABASUS_HTTP_API: ${DATABASUS_HTTP_API:-0}
+      PGPANEL_BACKUP_DIR: /var/lib/pgpanel/backups
+      BACKUP_STORAGE_TYPE: ${BACKUP_STORAGE_TYPE:-local}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_MAX_COUNT: ${BACKUP_MAX_COUNT:-30}
+      BACKUP_ENCRYPT: ${BACKUP_ENCRYPT:-1}
     volumes:
       - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/panel:/var/lib/pgpanel
-      # HIGH RISK — Docker socket for cluster provisioning only.
+      # HIGH RISK — Docker socket for cluster provisioning + pg_dump exec only.
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - pgpanel_frontend
@@ -92,38 +93,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      - databasus
-
-  databasus:
-    image: ${DATABASUS_IMAGE:-ghcr.io/databasus/databasus:latest}
-    restart: unless-stopped
-    env_file:
-      - ../.env
-    environment:
-      DATABASUS_INTERNAL_TOKEN: ${DATABASUS_INTERNAL_TOKEN:-}
-    volumes:
-      - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/databasus:/data
-    networks:
-      # Internal stack + management so Databasus can reach PG clusters by DNS.
-      # Never on frontend unless DATABASUS_PUBLIC=1 (installer-generated compose).
-      - pgpanel_internal
-      - pgpanel_database_management
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/ || exit 0"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
     logging:
       driver: json-file
       options:

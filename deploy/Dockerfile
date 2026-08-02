@@ -45,8 +45,17 @@ LABEL org.opencontainers.image.title="PgPanel" \
       org.opencontainers.image.source="https://github.com/pgpanel/pgpanel" \
       org.opencontainers.image.version="${PGPANEL_VERSION}"
 
+# docker CLI: panel runs `docker exec` for pg_dump/pg_restore against cluster containers
+# (socket mounted at runtime — not the daemon).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /var/lib/pgpanel --create-home --shell /usr/sbin/nologin pgpanel
 

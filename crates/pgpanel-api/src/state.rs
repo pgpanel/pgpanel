@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use pgpanel_backup::BackupEngine;
 use pgpanel_core::config::Config;
-use pgpanel_databasus::DatabasusAdapter;
 use pgpanel_docker::ClusterProvisioner;
 use pgpanel_jobs::{JobContext, JobQueue};
 
@@ -13,7 +13,7 @@ pub struct AppState {
     pub config: Config,
     pub queue: JobQueue,
     pub provisioner: ClusterProvisioner,
-    pub databasus: Arc<dyn DatabasusAdapter>,
+    pub backup: Arc<BackupEngine>,
     #[allow(dead_code)]
     pub job_ctx: Arc<JobContext>,
 }

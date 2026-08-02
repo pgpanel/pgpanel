@@ -12,7 +12,7 @@ path = "src/main.rs"
 pgpanel-core = { path = "../pgpanel-core" }
 pgpanel-docker = { path = "../pgpanel-docker" }
 pgpanel-postgres = { path = "../pgpanel-postgres" }
-pgpanel-databasus = { path = "../pgpanel-databasus" }
+pgpanel-backup = { path = "../pgpanel-backup" }
 pgpanel-jobs = { path = "../pgpanel-jobs" }
 
 axum = { workspace = true }

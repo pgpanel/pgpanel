@@ -28,6 +28,9 @@ pub async fn connect_and_migrate(database_url: &str) -> anyhow::Result<SqlitePoo
             sqlx::raw_sql(include_str!("../../../migrations/001_initial.sql"))
                 .execute(&pool)
                 .await?;
+            let _ = sqlx::raw_sql(include_str!("../../../migrations/002_native_backup.sql"))
+                .execute(&pool)
+                .await;
         }
     }
 

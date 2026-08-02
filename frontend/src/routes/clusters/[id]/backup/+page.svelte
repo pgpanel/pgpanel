@@ -2,11 +2,13 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { api } from '$lib/api';
+	import { trackOperation } from '$lib/jobs';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
+	import * as Table from '$lib/components/ui/table/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { toast } from 'svelte-sonner';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
@@ -15,7 +17,8 @@
 		Alert02Icon,
 		RefreshIcon,
 		CloudBackupIcon,
-		InformationCircleIcon
+		InformationCircleIcon,
+		SecurityCheckIcon
 	} from '@hugeicons/core-free-icons';
 
 	interface BackupStatus {
@@ -29,26 +32,43 @@
 		manual_setup_info: unknown;
 	}
 
+	interface BackupRow {
+		id: string;
+		kind: string;
+		status: string;
+		database_name: string;
+		storage_key: string | null;
+		size_bytes: number | null;
+		checksum_sha256: string | null;
+		error: string | null;
+		created_at: string;
+	}
+
 	const id = $derived($page.params.id);
 	let status = $state<BackupStatus | null>(null);
+	let history = $state<BackupRow[]>([]);
 	let error = $state('');
 
 	async function load() {
 		status = await api<BackupStatus>(`/api/clusters/${id}/backup`);
+		const h = await api<{ backups: BackupRow[] }>(`/api/clusters/${id}/backup/history`);
+		history = h.backups ?? [];
 	}
 
 	onMount(() => {
 		load().catch((e) => (error = e.message));
 	});
 
-	async function register() {
+	async function enable() {
 		error = '';
 		try {
-			const res = await api<{ operation_id: string }>(`/api/clusters/${id}/backup/register`, {
+			const res = await api<{ operation_id: string }>(`/api/clusters/${id}/backup/enable`, {
 				method: 'POST'
 			});
-			toast.success('Registration queued', { description: res.operation_id });
-			await load();
+			trackOperation(res.operation_id, {
+				title: 'Enable backups',
+				onDone: () => load()
+			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed';
 			toast.error(error);
@@ -58,13 +78,42 @@
 	async function trigger() {
 		error = '';
 		try {
-			await api(`/api/clusters/${id}/backup/trigger`, { method: 'POST' });
-			toast.success('Backup triggered');
-			await load();
+			const res = await api<{ operation_id: string }>(`/api/clusters/${id}/backup/trigger`, {
+				method: 'POST',
+				body: JSON.stringify({ database: 'postgres', schema_only: false })
+			});
+			trackOperation(res.operation_id, {
+				title: 'Logical backup',
+				onDone: () => load(),
+				onFail: () => load()
+			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed';
 			toast.error(error);
 		}
+	}
+
+	async function verify() {
+		error = '';
+		try {
+			const res = await api<{ operation_id: string }>(`/api/clusters/${id}/backup/verify`, {
+				method: 'POST'
+			});
+			trackOperation(res.operation_id, {
+				title: 'Verify backup',
+				onDone: () => load()
+			});
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed';
+			toast.error(error);
+		}
+	}
+
+	function fmtSize(n: number | null) {
+		if (n == null) return '—';
+		if (n < 1024) return `${n} B`;
+		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+		return `${(n / 1024 / 1024).toFixed(2)} MB`;
 	}
 </script>
 
@@ -76,17 +125,21 @@
 </div>
 
 <PageHeader
-	title="Backup (Databasus)"
-	description="WAL, PITR and restore verification are handled by Databasus — not reimplemented here"
+	title="Backups"
+	description="Native engine · pg_dump / pg_restore · local or S3 · scheduled retention"
 >
 	{#snippet actions()}
-		<Button variant="outline" onclick={register}>
+		<Button variant="outline" onclick={enable}>
 			<HugeiconsIcon icon={RefreshIcon} class="size-4" strokeWidth={2} />
-			Register / retry
+			Enable / schedule
+		</Button>
+		<Button variant="outline" onclick={verify}>
+			<HugeiconsIcon icon={SecurityCheckIcon} class="size-4" strokeWidth={2} />
+			Verify latest
 		</Button>
 		<Button onclick={trigger}>
 			<HugeiconsIcon icon={CloudBackupIcon} class="size-4" strokeWidth={2} />
-			Trigger backup
+			Run backup now
 		</Button>
 	{/snippet}
 </PageHeader>
@@ -99,10 +152,10 @@
 {/if}
 
 {#if status}
-	<div class="grid gap-4 lg:grid-cols-2">
+	<div class="mb-6 grid gap-4 lg:grid-cols-2">
 		<Card.Root class="border-border/60">
 			<Card.Header class="flex-row items-center justify-between space-y-0">
-				<Card.Title>Integration</Card.Title>
+				<Card.Title>Status</Card.Title>
 				<StatusBadge status={status.integration_status} />
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
@@ -117,18 +170,13 @@
 				</div>
 				<Separator />
 				<div class="flex justify-between gap-4">
-					<span class="text-muted-foreground">Lag (s)</span>
-					<span>{status.backup_lag_seconds ?? '—'}</span>
-				</div>
-				<Separator />
-				<div class="flex justify-between gap-4">
-					<span class="text-muted-foreground">WAL</span>
-					<span>{status.wal_status ?? '—'}</span>
-				</div>
-				<Separator />
-				<div class="flex justify-between gap-4">
-					<span class="text-muted-foreground">Failed backups</span>
+					<span class="text-muted-foreground">Failed</span>
 					<span class="tabular-nums">{status.failed_backups}</span>
+				</div>
+				<Separator />
+				<div class="flex justify-between gap-4">
+					<span class="text-muted-foreground">WAL / engine</span>
+					<span class="text-right text-xs">{status.wal_status ?? 'native'}</span>
 				</div>
 				{#if status.message}
 					<p class="pt-2 text-muted-foreground">{status.message}</p>
@@ -136,25 +184,62 @@
 			</Card.Content>
 		</Card.Root>
 
-		{#if status.manual_setup_info}
-			<Card.Root class="border-border/60">
-				<Card.Header>
-					<Card.Title class="flex items-center gap-2">
-						<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
-						Manual setup
-					</Card.Title>
-					<Card.Description>
-						Databasus API paths are version-dependent — complete in UI if needed
-					</Card.Description>
-				</Card.Header>
-				<Card.Content>
-					<pre class="overflow-x-auto rounded-lg bg-muted/40 p-3 font-mono text-xs">{JSON.stringify(
-							status.manual_setup_info,
-							null,
-							2
-						)}</pre>
-				</Card.Content>
-			</Card.Root>
-		{/if}
+		<Card.Root class="border-border/60">
+			<Card.Header>
+				<Card.Title class="flex items-center gap-2">
+					<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
+					Engine config
+				</Card.Title>
+				<Card.Description>
+					Logical full dumps by default. WAL archiving can be enabled per cluster (restart required).
+				</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<pre class="overflow-x-auto rounded-lg bg-muted/40 p-3 font-mono text-xs">{JSON.stringify(
+						status.manual_setup_info,
+						null,
+						2
+					)}</pre>
+			</Card.Content>
+		</Card.Root>
 	</div>
 {/if}
+
+<Card.Root class="border-border/60">
+	<Card.Header>
+		<Card.Title>History</Card.Title>
+		<Card.Description>Recent logical backups for this cluster</Card.Description>
+	</Card.Header>
+	<Card.Content>
+		{#if history.length === 0}
+			<p class="text-sm text-muted-foreground">No backups yet — run one now.</p>
+		{:else}
+			<Table.Root>
+				<Table.Header>
+					<Table.Row>
+						<Table.Head>When</Table.Head>
+						<Table.Head>DB</Table.Head>
+						<Table.Head>Kind</Table.Head>
+						<Table.Head>Status</Table.Head>
+						<Table.Head>Size</Table.Head>
+						<Table.Head>Key</Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
+					{#each history as b}
+						<Table.Row>
+							<Table.Cell class="text-xs whitespace-nowrap">{b.created_at}</Table.Cell>
+							<Table.Cell class="font-mono text-xs">{b.database_name}</Table.Cell>
+							<Table.Cell class="text-xs">{b.kind}</Table.Cell>
+							<Table.Cell><StatusBadge status={b.status} /></Table.Cell>
+							<Table.Cell class="tabular-nums text-xs">{fmtSize(b.size_bytes)}</Table.Cell>
+							<Table.Cell class="max-w-[180px] truncate font-mono text-xs" title={b.storage_key ?? ''}
+								>{b.storage_key ?? '—'}</Table.Cell
+							>
+						</Table.Row>
+					{/each}
+				</Table.Body>
+			</Table.Root>
+		{/if}
+	</Card.Content>
+</Card.Root>

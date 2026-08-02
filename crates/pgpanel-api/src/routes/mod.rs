@@ -6,6 +6,7 @@ mod clusters;
 mod databases;
 mod health;
 mod operations;
+mod settings;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
@@ -41,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .merge(backup::routes())
         .merge(operations::routes())
         .merge(audit::routes())
+        .merge(settings::routes())
         .layer(cors)
         .with_state(state)
 }

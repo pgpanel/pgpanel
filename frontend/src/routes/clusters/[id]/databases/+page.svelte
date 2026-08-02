@@ -11,6 +11,7 @@
 	import * as Table from '$lib/components/ui/table/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import { toast } from 'svelte-sonner';
+	import { trackOperation } from '$lib/jobs';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { ArrowLeft01Icon, Alert02Icon } from '@hugeicons/core-free-icons';
 
@@ -47,10 +48,15 @@
 					})
 				}
 			);
-			toast.success('Database creation queued', { description: res.operation_id });
+			const db = database_name;
+			const role = role_name;
 			database_name = '';
 			role_name = '';
-			await load();
+			trackOperation(res.operation_id, {
+				title: `Create ${db} / ${role}`,
+				onDone: () => load(),
+				onFail: () => load()
+			});
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed';
 			toast.error(error);

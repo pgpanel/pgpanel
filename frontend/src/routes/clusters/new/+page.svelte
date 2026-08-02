@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { trackOperation } from '$lib/jobs';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -21,18 +21,35 @@
 	let expose_publicly = $state(false);
 	let optional_public_port = $state(5433);
 	let enable_backup = $state(true);
+	let db_name = $state('');
+	let role_name = $state('');
+	let role_password = $state('');
 	let error = $state('');
 	let oneTimePassword = $state('');
+	let appPassword = $state('');
 	let loading = $state(false);
 	let createdId = $state('');
+	let opProgress = $state('');
 
 	const versionLabel = $derived(`PostgreSQL ${postgres_version}`);
+	const namePattern = '^[a-z][a-z0-9_]{2,62}$';
 
 	async function submit(e: Event) {
 		e.preventDefault();
 		loading = true;
 		error = '';
 		try {
+			const initial_databases =
+				db_name && role_name
+					? [
+							{
+								database_name: db_name,
+								role_name,
+								password: role_password || undefined
+							}
+						]
+					: [];
+
 			const res = await api<{
 				cluster: { id: string };
 				admin_password: string;
@@ -47,12 +64,33 @@
 					storage_limit_gb,
 					expose_publicly,
 					optional_public_port: expose_publicly ? optional_public_port : null,
-					enable_backup
+					enable_backup,
+					initial_databases
 				})
 			});
 			oneTimePassword = res.admin_password;
 			createdId = res.cluster.id;
-			toast.success('Cluster creation queued');
+			opProgress = 'queued';
+			trackOperation(res.operation_id, {
+				title: `Create cluster “${name}”`,
+				onDone: (op) => {
+					opProgress = 'succeeded';
+					const result = op.result as {
+						initial_credentials?: { database: string; role: string; password: string }[];
+					} | null;
+					const cred = result?.initial_credentials?.[0];
+					if (cred?.password) {
+						appPassword = cred.password;
+						toast.message('App role password (copy now)', {
+							description: `${cred.role}@${cred.database}`,
+							duration: 15000
+						});
+					}
+				},
+				onFail: () => {
+					opProgress = 'failed';
+				}
+			});
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Create failed';
 			toast.error(error);
@@ -61,30 +99,50 @@
 		}
 	}
 
-	async function copyPw() {
-		await navigator.clipboard.writeText(oneTimePassword);
-		toast.success('Password copied');
+	async function copyPw(text: string) {
+		await navigator.clipboard.writeText(text);
+		toast.success('Copied');
 	}
 </script>
 
 <PageHeader
 	title="Create cluster"
-	description="Provision an isolated PostgreSQL instance with private Docker networking"
+	description="Provision isolated PostgreSQL · private Docker network · native backups"
 />
 
 {#if oneTimePassword}
 	<Alert.Root class="mb-6 border-amber-500/40 bg-amber-500/10 text-amber-50">
 		<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
-		<Alert.Title>One-time admin password</Alert.Title>
+		<Alert.Title>Credentials (copy now)</Alert.Title>
 		<Alert.Description class="mt-2 space-y-3">
-			<p>Copy now — it will not be shown again.</p>
-			<div class="flex flex-wrap items-center gap-2">
-				<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all">{oneTimePassword}</code>
-				<Button size="sm" variant="secondary" onclick={copyPw}>
-					<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
-					Copy
-				</Button>
+			<p class="text-xs opacity-80">
+				Provisioning status: <strong>{opProgress || 'running'}</strong> — toast shows live progress.
+			</p>
+			<div>
+				<p class="mb-1 text-xs font-medium">postgres superuser</p>
+				<div class="flex flex-wrap items-center gap-2">
+					<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
+						>{oneTimePassword}</code
+					>
+					<Button size="sm" variant="secondary" onclick={() => copyPw(oneTimePassword)}>
+						<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+						Copy
+					</Button>
+				</div>
 			</div>
+			{#if appPassword}
+				<div>
+					<p class="mb-1 text-xs font-medium">App role ({role_name})</p>
+					<div class="flex flex-wrap items-center gap-2">
+						<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
+							>{appPassword}</code
+						>
+						<Button size="sm" variant="secondary" onclick={() => copyPw(appPassword)}>
+							Copy
+						</Button>
+					</div>
+				</div>
+			{/if}
 			<Button size="sm" href={`/clusters/${createdId}`}>Go to cluster</Button>
 		</Alert.Description>
 	</Alert.Root>
@@ -124,8 +182,42 @@
 
 	<Card.Root class="border-border/60">
 		<Card.Header>
+			<Card.Title>Application database & role</Card.Title>
+			<Card.Description>
+				Created automatically after the cluster is healthy. Leave empty to skip.
+			</Card.Description>
+		</Card.Header>
+		<Card.Content class="grid gap-4 sm:grid-cols-2">
+			<div class="space-y-2">
+				<Label for="db">Database name</Label>
+				<Input
+					id="db"
+					bind:value={db_name}
+					pattern={namePattern}
+					class="font-mono"
+					placeholder="app"
+				/>
+			</div>
+			<div class="space-y-2">
+				<Label for="role">Role name</Label>
+				<Input
+					id="role"
+					bind:value={role_name}
+					pattern={namePattern}
+					class="font-mono"
+					placeholder="app_user"
+				/>
+			</div>
+			<div class="space-y-2 sm:col-span-2">
+				<Label for="rpw">Role password (optional — generated if empty)</Label>
+				<Input id="rpw" type="password" bind:value={role_password} autocomplete="new-password" />
+			</div>
+		</Card.Content>
+	</Card.Root>
+
+	<Card.Root class="border-border/60">
+		<Card.Header>
 			<Card.Title>Resources</Card.Title>
-			<Card.Description>CPU, memory and soft storage limit</Card.Description>
 		</Card.Header>
 		<Card.Content>
 			<div class="grid gap-4 sm:grid-cols-3">
@@ -152,8 +244,10 @@
 		<Card.Content class="space-y-5">
 			<div class="flex items-center justify-between gap-4">
 				<div class="space-y-0.5">
-					<Label>Databasus backup integration</Label>
-					<p class="text-xs text-muted-foreground">Register cluster for backups when healthy</p>
+					<Label>Native backups</Label>
+					<p class="text-xs text-muted-foreground">
+						pg_dump schedule + retention (no external Databasus)
+					</p>
 				</div>
 				<Switch bind:checked={enable_backup} />
 			</div>

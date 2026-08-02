@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { authReady, refreshMe, user } from '$lib/auth';
+	import { api } from '$lib/api';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
@@ -14,19 +15,42 @@
 	let { children } = $props();
 
 	const publicPaths = ['/login', '/setup'];
+	let wizardChecked = $state(false);
+	let wizardNeeded = $state(false);
 
 	onMount(async () => {
 		await refreshMe();
 	});
+
+	async function checkWizard() {
+		if (wizardChecked) return wizardNeeded;
+		wizardChecked = true;
+		try {
+			const s = await api<{ wizard_completed: boolean }>('/api/settings/wizard');
+			wizardNeeded = !s.wizard_completed;
+		} catch {
+			wizardNeeded = false;
+		}
+		return wizardNeeded;
+	}
 
 	$effect(() => {
 		if (!$authReady) return;
 		const path = $page.url.pathname;
 		if (!$user && !publicPaths.includes(path)) {
 			goto('/login');
+			return;
 		}
 		if ($user && (path === '/login' || path === '/setup')) {
-			goto('/dashboard');
+			checkWizard().then((need) => {
+				goto(need ? '/wizard' : '/dashboard');
+			});
+			return;
+		}
+		if ($user && path !== '/wizard' && !publicPaths.includes(path)) {
+			checkWizard().then((need) => {
+				if (need) goto('/wizard');
+			});
 		}
 	});
 
@@ -43,7 +67,8 @@
 			databases: 'Databases',
 			browser: 'Browser',
 			query: 'SQL console',
-			backup: 'Backup'
+			backup: 'Backup',
+			wizard: 'Setup wizard'
 		};
 		const out: { label: string; href: string }[] = [];
 		let acc = '';
@@ -53,9 +78,13 @@
 		}
 		return out;
 	});
+
+	const bare = $derived(
+		publicPaths.includes($page.url.pathname) || $page.url.pathname === '/wizard'
+	);
 </script>
 
-<Toaster richColors position="top-right" theme="dark" />
+<Toaster richColors position="top-right" theme="dark" closeButton />
 
 {#if !$authReady}
 	<div class="flex min-h-screen items-center justify-center bg-background">
@@ -65,7 +94,7 @@
 			<Skeleton class="h-4 w-3/4" />
 		</div>
 	</div>
-{:else if publicPaths.includes($page.url.pathname)}
+{:else if bare}
 	{@render children()}
 {:else if $user}
 	<Sidebar.Provider>

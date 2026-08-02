@@ -29,8 +29,14 @@ pub struct Config {
     pub cluster_network_prefix: String,
     pub cluster_volume_prefix: String,
     pub cluster_container_prefix: String,
-    /// When false (default), Databasus uses Manual adapter — no invented HTTP API paths.
+    /// Deprecated: Databasus removed. Kept for env compatibility.
     pub databasus_http_api: bool,
+    /// Backup storage: local | s3 | r2 | b2 | minio | hetzner
+    pub backup_storage_type: String,
+    pub backup_data_dir: Option<PathBuf>,
+    pub backup_retention_days: u32,
+    pub backup_keep_count: u32,
+    pub backup_encrypt: bool,
     pub default_statement_timeout_ms: u64,
     pub default_lock_timeout_ms: u64,
     pub sql_console_max_rows: usize,
@@ -86,9 +92,12 @@ impl Config {
                 .unwrap_or_else(|_| "pgpanel_vol_".into()),
             cluster_container_prefix: env::var("PGPANEL_CONTAINER_PREFIX")
                 .unwrap_or_else(|_| "pgpanel_pg_".into()),
-            // Off by default: Databasus public provisioning API is version-dependent
-            // and not verified. Manual setup avoids invented /api/v1/* failures.
-            databasus_http_api: env_bool("DATABASUS_HTTP_API", false),
+            databasus_http_api: false,
+            backup_storage_type: env::var("BACKUP_STORAGE_TYPE").unwrap_or_else(|_| "local".into()),
+            backup_data_dir: env::var("PGPANEL_BACKUP_DIR").ok().map(PathBuf::from),
+            backup_retention_days: env_parse("BACKUP_RETENTION_DAYS", 14),
+            backup_keep_count: env_parse("BACKUP_MAX_COUNT", 30),
+            backup_encrypt: env_bool("BACKUP_ENCRYPT", true),
             default_statement_timeout_ms: env_parse("PGPANEL_STATEMENT_TIMEOUT_MS", 15_000),
             default_lock_timeout_ms: env_parse("PGPANEL_LOCK_TIMEOUT_MS", 3_000),
             sql_console_max_rows: env_parse("PGPANEL_SQL_MAX_ROWS", 1000),
