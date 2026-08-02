@@ -10,9 +10,9 @@
 	import { ServerStack01Icon, Alert02Icon, InformationCircleIcon } from '@hugeicons/core-free-icons';
 
 	let username = $state('admin');
+	let email = $state('');
 	let password = $state('');
 	let confirm = $state('');
-	let bootstrap_token = $state('');
 	let error = $state('');
 	let loading = $state(false);
 
@@ -26,10 +26,14 @@
 			error = 'Password must be at least 16 characters';
 			return;
 		}
+		if (!/^\S+@\S+\.\S+$/.test(email)) {
+			error = 'Enter a valid e-mail address';
+			return;
+		}
 		loading = true;
 		error = '';
 		try {
-			await bootstrap(username, password, bootstrap_token || undefined);
+			await bootstrap(username, email, password);
 			goto('/dashboard');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Bootstrap failed';
@@ -63,13 +67,17 @@
 					<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
 					<Alert.Title>Security tip</Alert.Title>
 					<Alert.Description>
-						Use a long password (16+ chars). Prefer the installer-generated password from
-						<code class="text-xs">/etc/pgpanel/.admin-password-ONCE</code>.
+						Use a long password (16+ characters). The account e-mail is stored with the admin
+						identity for future operational notifications.
 					</Alert.Description>
 				</Alert.Root>
 				<div class="space-y-2">
 					<Label for="username">Admin username</Label>
 					<Input id="username" bind:value={username} required />
+				</div>
+				<div class="space-y-2">
+					<Label for="email">E-mail address</Label>
+					<Input id="email" type="email" bind:value={email} autocomplete="email" required />
 				</div>
 				<div class="space-y-2">
 					<Label for="password">Password</Label>
@@ -78,10 +86,6 @@
 				<div class="space-y-2">
 					<Label for="confirm">Confirm password</Label>
 					<Input id="confirm" type="password" bind:value={confirm} required />
-				</div>
-				<div class="space-y-2">
-					<Label for="token">Bootstrap token (optional)</Label>
-					<Input id="token" bind:value={bootstrap_token} placeholder="From installer output or .env" />
 				</div>
 				<Button class="w-full" type="submit" disabled={loading}>
 					{loading ? 'Creating…' : 'Create admin'}

@@ -15,12 +15,11 @@ Nincs Git repo megadás. Hivatalos forrás: `https://github.com/pgpanel/pgpanel.
 
 | Mező | Érték |
 |------|--------|
-| Felhasználónév | `admin` (telepítéskor módosítható) |
-| Jelszó | Generált vagy kézzel megadott — **nincs** fix gyári jelszó |
+| Felhasználónév | `admin` (a webes setup során módosítható) |
+| Jelszó | A webes setup során adható meg — **nincs** fix gyári jelszó |
 | Első belépés | `https://DOMAIN/setup` |
 
-Jelszó egyszer a telepítő kimenetén és/vagy: `/etc/pgpanel/.admin-password-ONCE`  
-Bootstrap token: `/opt/pgpanel/.env` → `PGPANEL_BOOTSTRAP_TOKEN`
+Az első admin létrehozása a webes setup oldalon történik; nincs bootstrap token.
 
 ## Frissítés
 

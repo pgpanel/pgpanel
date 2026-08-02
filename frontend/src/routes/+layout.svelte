@@ -24,6 +24,11 @@
 
 	async function checkWizard() {
 		if (wizardChecked) return wizardNeeded;
+		if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pgpanel_wizard_done') === '1') {
+			wizardChecked = true;
+			wizardNeeded = false;
+			return false;
+		}
 		wizardChecked = true;
 		try {
 			const s = await api<{ wizard_completed: boolean }>('/api/settings/wizard');

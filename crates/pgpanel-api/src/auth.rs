@@ -50,6 +50,7 @@ pub async fn count_users(state: &AppState) -> Result<i64, Error> {
 pub async fn create_bootstrap_user(
     state: &AppState,
     username: &str,
+    email: &str,
     password: &SecretString,
 ) -> Result<User, Error> {
     if !bootstrap_needed(state).await? {
@@ -62,6 +63,11 @@ pub async fn create_bootstrap_user(
     if username.len() < 3 || username.len() > 64 {
         return Err(Error::Validation("username must be 3-64 characters".into()));
     }
+    if !is_valid_email(email) {
+        return Err(Error::Validation(
+            "a valid e-mail address is required".into(),
+        ));
+    }
     pgpanel_core::crypto::validate_password_strength(password.expose_or_str())?;
 
     let id = Uuid::new_v4();
@@ -69,10 +75,11 @@ pub async fn create_bootstrap_user(
     let now = Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, failed_login_attempts, created_at) VALUES (?, ?, ?, 0, ?)",
+        "INSERT INTO users (id, username, email, password_hash, failed_login_attempts, created_at) VALUES (?, ?, ?, ?, 0, ?)",
     )
     .bind(id.to_string())
     .bind(username)
+    .bind(email.trim())
     .bind(&hash)
     .bind(&now)
     .execute(&state.pool)
@@ -90,9 +97,22 @@ pub async fn create_bootstrap_user(
     Ok(User {
         id,
         username: username.to_string(),
+        email: email.trim().to_string(),
         created_at: Utc::now(),
         last_login_at: None,
     })
+}
+
+fn is_valid_email(email: &str) -> bool {
+    let email = email.trim();
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !email.chars().any(char::is_whitespace)
 }
 
 // Helper trait for SecretString expose in validation path without logging
@@ -114,7 +134,7 @@ pub async fn login(
     user_agent: Option<&str>,
 ) -> Result<(String, String, User), Error> {
     let row = sqlx::query_as::<_, UserRow>(
-        "SELECT id, username, password_hash, failed_login_attempts, locked_until, created_at, last_login_at FROM users WHERE username = ? COLLATE NOCASE",
+        "SELECT id, username, email, password_hash, failed_login_attempts, locked_until, created_at, last_login_at FROM users WHERE username = ? COLLATE NOCASE",
     )
     .bind(username)
     .fetch_optional(&state.pool)
@@ -193,6 +213,7 @@ pub async fn login(
     let user = User {
         id: Uuid::parse_str(&row.id).unwrap_or_default(),
         username: row.username,
+        email: row.email,
         created_at: parse_dt(&row.created_at),
         last_login_at: Some(Utc::now()),
     };
@@ -216,6 +237,7 @@ pub async fn session_from_token(state: &AppState, token: &str) -> Result<AuthUse
         r#"
         SELECT s.id AS session_id, s.csrf_token, s.expires_at,
                u.id AS user_id, u.username, u.created_at, u.last_login_at
+               , u.email
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ?
@@ -243,6 +265,7 @@ pub async fn session_from_token(state: &AppState, token: &str) -> Result<AuthUse
         user: User {
             id: Uuid::parse_str(&row.user_id).unwrap_or_default(),
             username: row.username,
+            email: row.email,
             created_at: parse_dt(&row.created_at),
             last_login_at: row.last_login_at.as_ref().map(|s| parse_dt(s)),
         },
@@ -321,6 +344,7 @@ pub async fn write_audit(
 struct UserRow {
     id: String,
     username: String,
+    email: String,
     password_hash: String,
     failed_login_attempts: i64,
     locked_until: Option<String>,
@@ -336,6 +360,7 @@ struct SessionRow {
     expires_at: String,
     user_id: String,
     username: String,
+    email: String,
     created_at: String,
     last_login_at: Option<String>,
 }

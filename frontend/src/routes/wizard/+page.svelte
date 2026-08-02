@@ -27,21 +27,71 @@
 	let enable_backup = $state(true);
 	let db_name = $state('app');
 	let role_name = $state('app_user');
-	// Step: backup storage note
+	let cpu_limit = $state(2);
+	let memory_mb = $state(2048);
+	let storage_limit_gb = $state(20);
+	// Step: backup storage
 	let storage_type = $state('local');
+	let storage_endpoint = $state('');
+	let storage_region = $state('auto');
+	let storage_bucket = $state('');
+	let storage_prefix = $state('pgpanel/');
+	let storage_access_key = $state('');
+	let storage_secret_key = $state('');
+	let storage_path_style = $state(true);
+	let storage_tls_verify = $state(true);
 
 	const steps = ['Welcome', 'First cluster', 'Backups', 'Done'];
 
-	async function completeWizard() {
+	async function exitWizard() {
 		try {
 			await api('/api/settings/wizard', {
 				method: 'POST',
 				body: JSON.stringify({ completed: true })
 			});
+		} finally {
 			sessionStorage.setItem('pgpanel_wizard_done', '1');
-		} catch {
-			sessionStorage.setItem('pgpanel_wizard_done', '1');
+			goto('/dashboard');
 		}
+	}
+
+	async function completeWizard() {
+		try {
+			if (storage_type !== 'local') {
+				if (!storage_bucket || !storage_access_key || !storage_secret_key) {
+					toast.error('Bucket, access key and secret key are required for object storage');
+					step = 2;
+					return;
+				}
+				await api('/api/settings/storage', {
+					method: 'POST',
+					body: JSON.stringify({
+						storage_type,
+						endpoint: storage_endpoint,
+						region: storage_region,
+						bucket: storage_bucket,
+						prefix: storage_prefix,
+						access_key: storage_access_key,
+						secret_key: storage_secret_key,
+						path_style: storage_path_style,
+						tls_verify: storage_tls_verify,
+						encrypt: true,
+						retention_days: 14,
+						keep_count: 30,
+						schedule_hour: 3
+					})
+				});
+			}
+			await api('/api/settings/wizard', {
+				method: 'POST',
+				body: JSON.stringify({ completed: true })
+			});
+			sessionStorage.setItem('pgpanel_wizard_done', '1');
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : 'Could not save wizard settings');
+			return;
+		}
+		sessionStorage.setItem('pgpanel_wizard_done', '1');
 		goto('/dashboard');
 	}
 
@@ -57,9 +107,9 @@
 				body: JSON.stringify({
 					name,
 					postgres_version,
-					cpu_limit: 1,
-					memory_mb: 1024,
-					storage_limit_gb: 20,
+					cpu_limit,
+					memory_mb,
+					storage_limit_gb,
 					expose_publicly: false,
 					enable_backup,
 					initial_databases:
@@ -108,6 +158,9 @@
 				{i + 1}. {s}
 			</div>
 		{/each}
+	</div>
+	<div class="flex justify-center">
+		<Button variant="ghost" size="sm" onclick={exitWizard}>Exit setup</Button>
 	</div>
 
 	{#if step === 0}
@@ -169,6 +222,20 @@
 						<Input bind:value={role_name} class="font-mono" placeholder="app_user" />
 					</div>
 				</div>
+				<div class="grid gap-4 sm:grid-cols-3">
+					<div class="space-y-2">
+						<Label>CPU limit</Label>
+						<Input type="number" min="1" max="32" bind:value={cpu_limit} />
+					</div>
+					<div class="space-y-2">
+						<Label>Memory (MB)</Label>
+						<Input type="number" min="512" max="262144" bind:value={memory_mb} />
+					</div>
+					<div class="space-y-2">
+						<Label>Storage (GB)</Label>
+						<Input type="number" min="1" max="100000" bind:value={storage_limit_gb} />
+					</div>
+				</div>
 				<div class="flex items-center justify-between">
 					<div>
 						<Label>Enable backups</Label>
@@ -195,8 +262,8 @@
 					Backup storage
 				</Card.Title>
 				<Card.Description>
-					Default is local disk under the panel data directory. Configure S3/R2 in Settings or
-					<code class="text-xs">.env</code> (BACKUP_STORAGE_TYPE, S3_*).
+					Choose where backups live. Credentials are encrypted in the panel database and never written
+					to <code class="text-xs">.env</code>.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
@@ -207,15 +274,39 @@
 						<span class="block text-xs text-muted-foreground">Fast · on this VPS</span>
 					</span>
 				</label>
-				<label class="flex cursor-pointer items-center gap-3 rounded-lg border p-3 opacity-90">
+				<label class="flex cursor-pointer items-center gap-3 rounded-lg border p-3">
 					<input type="radio" bind:group={storage_type} value="s3" />
 					<span>
 						<strong>S3-compatible</strong>
 						<span class="block text-xs text-muted-foreground"
-							>R2 / B2 / MinIO / AWS — set keys in .env then restart panel</span
+							>AWS, R2, B2, Hetzner or MinIO</span
 						>
 					</span>
 				</label>
+				{#if storage_type !== 'local'}
+					<div class="grid gap-4 border-t pt-4 sm:grid-cols-2">
+						<div class="space-y-2 sm:col-span-2">
+							<Label>Endpoint URL</Label>
+							<Input bind:value={storage_endpoint} placeholder="https://..." />
+						</div>
+						<div class="space-y-2">
+							<Label>Region</Label>
+							<Input bind:value={storage_region} placeholder="auto" />
+						</div>
+						<div class="space-y-2">
+							<Label>Bucket</Label>
+							<Input bind:value={storage_bucket} required />
+						</div>
+						<div class="space-y-2">
+							<Label>Access key</Label>
+							<Input bind:value={storage_access_key} autocomplete="off" required />
+						</div>
+						<div class="space-y-2">
+							<Label>Secret key</Label>
+							<Input type="password" bind:value={storage_secret_key} autocomplete="new-password" required />
+						</div>
+					</div>
+				{/if}
 			</Card.Content>
 			<Card.Footer class="justify-between">
 				<Button variant="outline" onclick={() => (step = 1)}>Back</Button>

@@ -9,7 +9,7 @@ mod types;
 mod wal;
 
 pub use engine::BackupEngine;
-pub use storage::{LocalStorage, S3Storage, StorageBackend};
+pub use storage::{LocalStorage, S3Storage, S3StorageConfig, StorageBackend};
 pub use types::*;
 pub use wal::{archive_settings_sql, WalConfig, WalStatus};
 
@@ -22,7 +22,7 @@ pub fn build_engine(config: &Config) -> Arc<BackupEngine> {
     let storage: Arc<dyn StorageBackend> = match config.backup_storage_type.as_str() {
         "s3" | "r2" | "b2" | "hetzner" | "minio" => match S3Storage::from_env(data.clone()) {
             Ok(s) => {
-                tracing::info!("backup storage: S3-compatible (staged + aws cli)");
+                tracing::info!("backup storage: S3-compatible (signed HTTP)");
                 Arc::new(s)
             }
             Err(e) => {

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use chrono::Utc;
 use flate2::write::GzEncoder;
@@ -20,7 +21,7 @@ use crate::types::*;
 
 pub struct BackupEngine {
     pub data_dir: PathBuf,
-    pub storage: Arc<dyn StorageBackend>,
+    pub storage: Arc<RwLock<Arc<dyn StorageBackend>>>,
     pub config: Config,
 }
 
@@ -28,13 +29,20 @@ impl BackupEngine {
     pub fn new(data_dir: PathBuf, storage: Arc<dyn StorageBackend>, config: Config) -> Self {
         Self {
             data_dir,
-            storage,
+            storage: Arc::new(RwLock::new(storage)),
             config,
         }
     }
 
-    pub fn storage_kind(&self) -> &str {
-        self.storage.kind()
+    pub fn storage_kind(&self) -> String {
+        self.storage
+            .try_read()
+            .map(|storage| storage.kind().to_string())
+            .unwrap_or_else(|_| "unknown".into())
+    }
+
+    pub async fn set_storage(&self, storage: Arc<dyn StorageBackend>) {
+        *self.storage.write().await = storage;
     }
 
     pub async fn run_logical_backup(
@@ -71,10 +79,7 @@ impl BackupEngine {
         let payload = if req.encrypt {
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
-            let enc = encrypt_secret(
-                &self.config.master_encryption_key,
-                &SecretString::from(b64),
-            )?;
+            let enc = encrypt_secret(&self.config.master_encryption_key, &SecretString::from(b64))?;
             format!("enc:v1:{enc}").into_bytes()
         } else {
             compressed
@@ -95,7 +100,8 @@ impl BackupEngine {
             if req.encrypt { ".enc" } else { "" }
         );
 
-        let storage_key = self.storage.put(&key, &payload).await?;
+        let storage = self.storage.read().await.clone();
+        let storage_key = storage.put(&key, &payload).await?;
 
         let local = self
             .data_dir
@@ -130,7 +136,8 @@ impl BackupEngine {
     }
 
     pub async fn load_raw_dump(&self, storage_key: &str, encrypted: bool) -> Result<Vec<u8>> {
-        let mut data = self.storage.get(storage_key).await?;
+        let storage = self.storage.read().await.clone();
+        let mut data = storage.get(storage_key).await?;
         if encrypted || storage_key.ends_with(".enc") || data.starts_with(b"enc:v1:") {
             let s = String::from_utf8_lossy(&data);
             let token = s.strip_prefix("enc:v1:").unwrap_or(&s);
@@ -150,7 +157,12 @@ impl BackupEngine {
         Ok(raw)
     }
 
-    pub async fn verify_logical(&self, container: &str, storage_key: &str, encrypted: bool) -> Result<String> {
+    pub async fn verify_logical(
+        &self,
+        container: &str,
+        storage_key: &str,
+        encrypted: bool,
+    ) -> Result<String> {
         let raw = self.load_raw_dump(storage_key, encrypted).await?;
         dump::pg_restore_list(container, &raw).await
     }

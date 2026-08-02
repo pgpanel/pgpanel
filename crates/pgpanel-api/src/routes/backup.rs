@@ -89,7 +89,10 @@ async fn backup_status(
         last_successful_backup: None,
         last_backup_status: None,
         backup_lag_seconds: None,
-        wal_status: Some(format!("engine=native storage={}", state.backup.storage_kind())),
+        wal_status: Some(format!(
+            "engine=native storage={}",
+            state.backup.storage_kind()
+        )),
         failed_backups: 0,
         message: Some("Backup not enabled for this cluster yet".into()),
         manual_setup_info: Some(serde_json::json!({
@@ -180,12 +183,7 @@ async fn verify(
     let _ = load_cluster(&state, id).await?;
     let op = state
         .queue
-        .enqueue(
-            JobType::VerifyBackup,
-            Some(id),
-            serde_json::json!({}),
-            None,
-        )
+        .enqueue(JobType::VerifyBackup, Some(id), serde_json::json!({}), None)
         .await
         .map_err(AppError)?;
 
@@ -246,12 +244,7 @@ async fn metrics(
 
     // Live sample
     let live = if let Some(ref name) = Some(cluster.docker_container_name.clone()) {
-        state
-            .provisioner
-            .docker()
-            .container_stats(name)
-            .await
-            .ok()
+        state.provisioner.docker().container_stats(name).await.ok()
     } else {
         None
     };

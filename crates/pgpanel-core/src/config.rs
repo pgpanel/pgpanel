@@ -41,7 +41,6 @@ pub struct Config {
     pub default_lock_timeout_ms: u64,
     pub sql_console_max_rows: usize,
     pub sql_admin_mode_enabled: bool,
-    pub bootstrap_token: Option<String>,
 }
 
 impl Config {
@@ -102,7 +101,6 @@ impl Config {
             default_lock_timeout_ms: env_parse("PGPANEL_LOCK_TIMEOUT_MS", 3_000),
             sql_console_max_rows: env_parse("PGPANEL_SQL_MAX_ROWS", 1000),
             sql_admin_mode_enabled: env_bool("PGPANEL_SQL_ADMIN_MODE", false),
-            bootstrap_token: env::var("PGPANEL_BOOTSTRAP_TOKEN").ok(),
         })
     }
 

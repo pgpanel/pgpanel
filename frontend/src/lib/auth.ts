@@ -28,10 +28,10 @@ export async function login(username: string, password: string) {
 	return me;
 }
 
-export async function bootstrap(username: string, password: string, bootstrap_token?: string) {
+export async function bootstrap(username: string, email: string, password: string) {
 	await api('/api/auth/bootstrap', {
 		method: 'POST',
-		body: JSON.stringify({ username, password, bootstrap_token })
+		body: JSON.stringify({ username, email, password })
 	});
 	return login(username, password);
 }

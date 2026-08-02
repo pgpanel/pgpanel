@@ -132,7 +132,7 @@ cmd_env_check() {
   mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%OLp' "$f")"
   echo "path=$f mode=$mode"
   [[ "$mode" == "600" ]] || echo "WARNING: expected 0600"
-  for k in PGPANEL_MASTER_KEY PGPANEL_BOOTSTRAP_TOKEN DATABASUS_INTERNAL_TOKEN PGPANEL_IMAGE; do
+  for k in PGPANEL_MASTER_KEY DATABASUS_INTERNAL_TOKEN PGPANEL_IMAGE; do
     if grep -q "^${k}=" "$f"; then
       echo "present: $k"
     else

@@ -11,7 +11,7 @@
 | Re-install | Existing `.env` is **never** regenerated on update/repair |
 | Logs | `mask_secrets` strips passwords, tokens, keys, connection strings |
 | Compose | Secrets via `env_file`, never as CLI `-e` for long-lived secrets |
-| Passwords | Typed with `read -rsp`; generated passwords shown once + optional 0600 once-file |
+| Passwords | The first admin password is entered in the web setup; database and storage secrets are encrypted or kept in the root-only `.env` |
 
 Non-secret installer choices live in `/etc/pgpanel/installer.conf` (no raw passwords).
 

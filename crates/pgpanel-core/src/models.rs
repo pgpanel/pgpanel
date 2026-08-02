@@ -521,6 +521,7 @@ pub struct OperationLog {
 pub struct User {
     pub id: Uuid,
     pub username: String,
+    pub email: String,
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
 }
@@ -529,8 +530,7 @@ pub struct User {
 pub struct BootstrapRequest {
     pub username: String,
     pub password: String,
-    /// Optional one-time bootstrap token from install.sh
-    pub bootstrap_token: Option<String>,
+    pub email: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

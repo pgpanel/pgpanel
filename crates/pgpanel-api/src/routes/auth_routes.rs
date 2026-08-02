@@ -11,10 +11,9 @@ use pgpanel_core::audit;
 use pgpanel_core::models::{BootstrapRequest, LoginRequest, MeResponse};
 
 use crate::auth::{bootstrap_needed, create_bootstrap_user, login, logout, write_audit, AuthUser};
-use crate::error::{ApiResult, AppError};
+use crate::error::ApiResult;
 use crate::state::AppState;
 use axum::extract::State;
-use pgpanel_core::error::Error;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -41,20 +40,8 @@ async fn bootstrap(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<BootstrapRequest>,
 ) -> ApiResult<Json<MeResponse>> {
-    // Optional bootstrap token from install.sh
-    if let Some(expected) = &state.config.bootstrap_token {
-        match &body.bootstrap_token {
-            Some(t) if t == expected => {}
-            _ => {
-                return Err(AppError(Error::Forbidden(
-                    "invalid or missing bootstrap token".into(),
-                )));
-            }
-        }
-    }
-
     let password = SecretString::from(body.password);
-    let user = create_bootstrap_user(&state, &body.username, &password).await?;
+    let user = create_bootstrap_user(&state, &body.username, &body.email, &password).await?;
 
     write_audit(
         &state,
@@ -62,7 +49,7 @@ async fn bootstrap(
         audit::AUTH_BOOTSTRAP,
         "user",
         Some(&user.id.to_string()),
-        serde_json::json!({"username": user.username}),
+        serde_json::json!({"username": user.username, "email": user.email}),
         Some(&addr.ip().to_string()),
         None,
     )

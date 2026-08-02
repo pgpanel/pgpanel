@@ -128,6 +128,7 @@ CREATE_SWAP=0
 SWAP_SIZE_MB=2048
 ENABLE_WATCHTOWER=0
 PRODUCTION_READY=0
+MINIMAL_INSTALL=1
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -346,6 +347,7 @@ TIMEZONE_SET=${TIMEZONE_SET}
 CREATE_SWAP=${CREATE_SWAP}
 SWAP_SIZE_MB=${SWAP_SIZE_MB}
 ENABLE_WATCHTOWER=${ENABLE_WATCHTOWER}
+MINIMAL_INSTALL=${MINIMAL_INSTALL}
 EOF
   chmod 0600 "$tmp"
   chown root:root "$tmp" 2>/dev/null || true
@@ -746,7 +748,9 @@ preflight_checks() {
 
   if ! is_primary_supported; then
     log_warn "OS ${OS_PRETTY} is not in the primary test matrix; continuing best-effort"
-    if ! confirm "Continue on untested OS?" "N"; then
+    if [[ "$MINIMAL_INSTALL" -eq 1 ]]; then
+      log_warn "OS ${OS_PRETTY} is outside the primary test matrix; continuing with defaults"
+    elif ! confirm "Continue on untested OS?" "N"; then
       die "Aborted by user"
     fi
   fi
@@ -778,7 +782,9 @@ EOF
   (( disk < MIN_DISK_GB )) && below=1
   if [[ $below -eq 1 ]]; then
     log_warn "Host is below minimum requirements"
-    if ! confirm "Continue anyway?" "N"; then
+    if [[ "$MINIMAL_INSTALL" -eq 1 ]]; then
+      log_warn "Host is below the recommended minimum; continuing with defaults"
+    elif ! confirm "Continue anyway?" "N"; then
       die "Aborted due to insufficient resources"
     fi
   fi
@@ -1179,30 +1185,27 @@ generate_or_load_secrets() {
     upsert_env_key "$env_file" "PGPANEL_MANAGEMENT_NETWORK" "pgpanel_database_management"
     upsert_env_key "$env_file" "BACKUP_STORAGE_TYPE" "${BACKUP_STORAGE_TYPE:-local}"
     upsert_env_key "$env_file" "PGPANEL_BACKUP_DIR" "/var/lib/pgpanel/backups"
+    # Admin identity and bootstrap credentials belong to SQLite, not .env.
+    # Keep legacy S3 keys temporarily for upgrade compatibility; new installs
+    # configure storage from the web UI and never write them here.
+    local cleaned_env
+    cleaned_env="$(mktemp)"
+    sed -E '/^(PGPANEL_BOOTSTRAP_TOKEN|PGPANEL_ADMIN_USERNAME|PGPANEL_ADMIN_EMAIL|DATABASUS_ADMIN_EMAIL|DATABASUS_ADMIN_PASSWORD)=/d' \
+      "$env_file" >"$cleaned_env"
+    chmod 0600 "$cleaned_env"
+    chown root:root "$cleaned_env" 2>/dev/null || true
+    mv -f "$cleaned_env" "$env_file"
     return 0
   fi
 
   umask 077
-  local master bootstrap session csrf api_sign databasus_enc internal_api docker_suffix
+  local master session csrf api_sign internal_api docker_suffix
   master="$(gen_secret)"
-  bootstrap="$(gen_secret)"
   session="$(gen_secret)"
   csrf="$(gen_secret)"
   api_sign="$(gen_secret)"
-  databasus_enc="$(gen_secret)"
   internal_api="$(gen_secret)"
   docker_suffix="$(openssl rand -hex 4)"
-
-  if [[ -z "$ADMIN_PASSWORD" ]]; then
-    ADMIN_PASSWORD="$(gen_password)"
-    ADMIN_PASSWORD_GENERATED=1
-  fi
-  if [[ -z "$DATABASUS_ADMIN_PASSWORD" && "$ENABLE_DATABASUS" -eq 1 ]]; then
-    DATABASUS_ADMIN_PASSWORD="$(gen_password)"
-  fi
-  if [[ -z "$DATABASUS_ADMIN_EMAIL" ]]; then
-    DATABASUS_ADMIN_EMAIL="$ADMIN_EMAIL"
-  fi
 
   local cookie_secure="true"
   [[ "$ENABLE_HTTPS" -eq 0 ]] && cookie_secure="false"
@@ -1216,7 +1219,6 @@ PGPANEL_MASTER_KEY=${master}
 PGPANEL_SESSION_SECRET=${session}
 PGPANEL_CSRF_SECRET=${csrf}
 PGPANEL_API_SIGNING_SECRET=${api_sign}
-PGPANEL_BOOTSTRAP_TOKEN=${bootstrap}
 PGPANEL_INTERNAL_API_TOKEN=${internal_api}
 PGPANEL_DOCKER_NETWORK_SUFFIX=${docker_suffix}
 
@@ -1235,17 +1237,7 @@ PGPANEL_IMAGE=${PGPANEL_IMAGE}
 PGPANEL_HOST_DATA=${DATA_DIR}
 PGPANEL_PULL_POLICY=always
 
-# Defaults for cluster creation (consumed by panel / docs)
-PGPANEL_DEFAULT_PG_VERSION=${PG_DEFAULT_VERSION}
-PGPANEL_ALLOWED_PG_VERSIONS=${PG_ALLOWED_VERSIONS}
-PGPANEL_DEFAULT_CPU=${PG_DEFAULT_CPU}
-PGPANEL_DEFAULT_MEMORY_MB=${PG_DEFAULT_MEMORY_MB}
-PGPANEL_DEFAULT_STORAGE_GB=${PG_DEFAULT_STORAGE_GB}
-PGPANEL_DEFAULT_TIMEZONE=${PG_TIMEZONE}
-PGPANEL_MAX_CLUSTERS=${PG_MAX_CLUSTERS}
-PGPANEL_CONTAINER_PREFIX=${PG_CLUSTER_PREFIX}
-PGPANEL_PUBLIC_PORTS_DEFAULT=$([ "${PUBLIC_PG_PORTS}" -eq 1 ] && echo true || echo false)
-# Shared Docker network: panel + Databasus + PG clusters (DNS for pgpanel_pg_*)
+# Shared Docker network: panel + PostgreSQL clusters (DNS for pgpanel_pg_*)
 PGPANEL_MANAGEMENT_NETWORK=pgpanel_database_management
 PGPANEL_NETWORK_PREFIX=pgpanel_net_
 PGPANEL_VOLUME_PREFIX=pgpanel_vol_
@@ -1254,58 +1246,14 @@ PGPANEL_VOLUME_PREFIX=pgpanel_vol_
 BACKUP_STORAGE_TYPE=${BACKUP_STORAGE_TYPE:-local}
 BACKUP_ENCRYPT=1
 PGPANEL_BACKUP_DIR=/var/lib/pgpanel/backups
-
-# ── Backup storage (S3 optional) ────────────────────────────────────────────
-BACKUP_STORAGE_TYPE=${BACKUP_STORAGE_TYPE}
-S3_ENDPOINT=${S3_ENDPOINT}
-S3_REGION=${S3_REGION}
-S3_BUCKET=${S3_BUCKET}
-S3_ACCESS_KEY=${S3_ACCESS_KEY}
-S3_SECRET_KEY=${S3_SECRET_KEY}
-S3_PATH_STYLE=${S3_PATH_STYLE}
-S3_PREFIX=${S3_PREFIX}
-S3_TLS_VERIFY=${S3_TLS_VERIFY}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
 BACKUP_MAX_COUNT=${BACKUP_MAX_COUNT}
-BACKUP_FULL_FREQ=${BACKUP_FULL_FREQ}
-BACKUP_INCR_FREQ=${BACKUP_INCR_FREQ}
-BACKUP_WAL_STREAMING=${BACKUP_WAL_STREAMING}
-BACKUP_RESTORE_VERIFY=${BACKUP_RESTORE_VERIFY}
-
-# ── Notifications ───────────────────────────────────────────────────────────
-NOTIFY_TYPE=${NOTIFY_TYPE}
-SMTP_HOST=${SMTP_HOST}
-SMTP_PORT=${SMTP_PORT}
-SMTP_TLS=${SMTP_TLS}
-SMTP_USER=${SMTP_USER}
-SMTP_PASSWORD=${SMTP_PASSWORD}
-SMTP_FROM=${SMTP_FROM}
-SMTP_TO=${SMTP_TO}
-WEBHOOK_URL=${WEBHOOK_URL}
-WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
-
-# ── Admin bootstrap hints (password is NOT stored here if generated file used)
-PGPANEL_ADMIN_USERNAME=${ADMIN_USERNAME}
-PGPANEL_ADMIN_EMAIL=${ADMIN_EMAIL}
 EOF
 
   chmod 0600 "$env_file"
   chown root:root "$env_file"
   log_ok ".env written (${env_file})"
 
-  if [[ "$ADMIN_PASSWORD_GENERATED" -eq 1 ]]; then
-    local pwfile="${PGPANEL_ETC_DIR}/.admin-password-ONCE"
-    write_secure_file "$pwfile" "$ADMIN_PASSWORD" 0600
-    log_warn "Generated admin password written once to ${pwfile} (delete after saving!)"
-    printf '\n%s=== ONE-TIME ADMIN PASSWORD (store securely, then delete the file) ===%s\n' "$C_YELLOW" "$C_RESET"
-    printf '%s\n' "$ADMIN_PASSWORD"
-    printf '%s=====================================================================%s\n\n' "$C_YELLOW" "$C_RESET"
-  fi
-
-  # Bootstrap token one-time display
-  printf '\n%s=== BOOTSTRAP TOKEN (for /setup if required) ===%s\n' "$C_CYAN" "$C_RESET"
-  printf '%s\n' "$bootstrap"
-  printf '%s================================================%s\n\n' "$C_CYAN" "$C_RESET"
 }
 
 # ── Config file (non-secret) ─────────────────────────────────────────────────
@@ -1370,7 +1318,6 @@ TIMEZONE_SET=${TIMEZONE_SET}
 CREATE_SWAP=${CREATE_SWAP}
 SWAP_SIZE_MB=${SWAP_SIZE_MB}
 PRODUCTION_READY=0
-INSTALLER_VERSION=${INSTALLER_VERSION}
 INSTALLED_AT=${STARTED_AT}
 EOF
   chmod 0640 "$PGPANEL_CONF"
@@ -1380,11 +1327,18 @@ EOF
 
 load_installer_conf() {
   if [[ -f "$PGPANEL_CONF" ]]; then
+    # Older installers wrote INSTALLER_VERSION into this file. It must not be
+    # sourced here because the runtime constant above is readonly; keeping the
+    # filter also makes upgrades from 1.5.0 safe and idempotent.
+    local filtered_conf
+    filtered_conf="$(mktemp)"
+    sed '/^[[:space:]]*INSTALLER_VERSION[[:space:]]*=/d' "$PGPANEL_CONF" >"$filtered_conf"
     # shellcheck source=/dev/null
     set -a
     # shellcheck disable=SC1090
-    source "$PGPANEL_CONF"
+    source "$filtered_conf"
     set +a
+    rm -f "$filtered_conf"
     log_info "Loaded configuration from ${PGPANEL_CONF}"
   fi
 }
@@ -1639,7 +1593,7 @@ EOF
     log_info "Admin IP allowlist: ${ADMIN_IP_ALLOWLIST}"
   fi
 
-  if ! confirm "Apply UFW rules now?" "Y"; then
+  if [[ "$MINIMAL_INSTALL" -ne 1 ]] && ! confirm "Apply UFW rules now?" "Y"; then
     log_warn "UFW not applied"
     return 0
   fi
@@ -2056,7 +2010,7 @@ print_final_message() {
 ${C_GREEN}${C_BOLD}PgPanel telepítés kész.${C_RESET}
 
 ${C_BOLD}Panel:${C_RESET}   ${panel_url}
-${C_BOLD}Admin:${C_RESET}   ${ADMIN_EMAIL} / ${ADMIN_USERNAME}
+${C_BOLD}Admin:${C_RESET}   Első admin létrehozása a webes setup oldalon (e-mail + jelszó)
 ${C_BOLD}Backup:${C_RESET}  native engine (${BACKUP_STORAGE_TYPE:-local})
 
 ${C_BOLD}Konfiguráció:${C_RESET}
@@ -2150,6 +2104,41 @@ prompt_network() {
   PUBLIC_PG_PORTS=0
   prompt_yesno CONFIGURE_UFW "UFW tűzfal (SSH + 80/443)?" "y"
   prompt_val SSH_PORT "SSH port" "22"
+}
+
+# Fresh installs intentionally ask only for the public panel identity. All
+# operational settings (storage, retention, notifications, PostgreSQL
+# defaults, firewall details) are managed after login in the web UI or via
+# `pgpanel configure`.
+prompt_minimal_install_identity() {
+  echo ""
+  echo "${C_BOLD}=== PgPanel alap telepítés ===${C_RESET}"
+  echo "A telepítő csak a panel domaint és a tanúsítványhoz tartozó e-mail címet kéri."
+  local domain_default="$PANEL_DOMAIN"
+  local email_default="$LETSENCRYPT_EMAIL"
+  [[ "$domain_default" == "db.example.com" ]] && domain_default=""
+  [[ "$email_default" == "admin@example.com" ]] && email_default=""
+  prompt_val PANEL_DOMAIN "Panel domain" "$domain_default"
+  prompt_val LETSENCRYPT_EMAIL "E-mail cím" "$email_default"
+
+  if [[ ! "$PANEL_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    die "Invalid panel domain: ${PANEL_DOMAIN}"
+  fi
+  if [[ ! "$LETSENCRYPT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+    die "Invalid e-mail address: ${LETSENCRYPT_EMAIL}"
+  fi
+
+  USE_DOMAIN=1
+  ENABLE_HTTPS=1
+  CONFIGURE_UFW=1
+  PUBLIC_PG_PORTS=0
+  DATABASUS_PUBLIC=0
+  DATABASUS_DOMAIN=""
+  BACKUP_STORAGE_TYPE="local"
+  NOTIFY_TYPE="none"
+  ENABLE_DATABASUS=0
+  CREATE_SWAP=0
+  ENABLE_WATCHTOWER=0
 }
 
 prompt_admin() {
@@ -2314,18 +2303,8 @@ EOF
 
 # ── Main install flow ────────────────────────────────────────────────────────
 collect_install_answers() {
-  prompt_base_settings
-  prompt_network
-  prompt_admin
-  # Sensible defaults — advanced options live in the post-login wizard / Settings
-  PG_DEFAULT_VERSION="${PG_DEFAULT_VERSION:-17}"
-  ENABLE_DATABASUS=0
-  BACKUP_STORAGE_TYPE="${BACKUP_STORAGE_TYPE:-local}"
-  NOTIFY_TYPE="${NOTIFY_TYPE:-none}"
-  log_info "Backup: native engine (local by default). Configure S3 later in Settings / .env"
-  prompt_yesno CREATE_SWAP "Swap létrehozása ha nincs?" "n"
-  prompt_yesno ENABLE_WATCHTOWER "Watchtower auto-update konténer?" "n"
-  show_summary_and_confirm
+  prompt_minimal_install_identity
+  log_info "Advanced settings are available after login in Settings and the setup wizard."
   save_install_answers
   mark_step_done "prompts"
 }

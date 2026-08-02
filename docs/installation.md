@@ -69,8 +69,8 @@ Verzió forrása: gyökér `VERSION` fájl (pl. `0.1.0`).
 
 | Mező | Érték |
 |------|--------|
-| User | `admin` (telepítéskor változtatható) |
-| Jelszó | Generált / megadott — **nincs** fix gyári jelszó |
+| User | `admin` (a webes setup során választható) |
+| Jelszó | A webes setup során választandó — **nincs** fix gyári jelszó |
 | Setup | `https://DOMAIN/setup` |
 
 ## Hasznos parancsok

@@ -437,10 +437,11 @@ impl JobContext {
     async fn enable_backup_inner(&self, cluster_id: Uuid, _container: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let schedule_id = Uuid::new_v4();
+        let (retention_days, keep_count, _, schedule_hour) = self.backup_policy().await;
         sqlx::query(
             r#"
             INSERT INTO backup_schedules (id, cluster_id, cron, kind, database_name, enabled, retention_days, keep_count, created_at, updated_at)
-            VALUES (?, ?, '0 3 * * *', 'logical_full', 'postgres', 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, 'logical_full', 'postgres', 1, ?, ?, ?, ?)
             ON CONFLICT(cluster_id, database_name, kind) DO UPDATE SET
                 enabled = 1,
                 retention_days = excluded.retention_days,
@@ -450,8 +451,9 @@ impl JobContext {
         )
         .bind(schedule_id.to_string())
         .bind(cluster_id.to_string())
-        .bind(self.config.backup_retention_days as i64)
-        .bind(self.config.backup_keep_count as i64)
+        .bind(format!("0 {schedule_hour} * * *"))
+        .bind(retention_days)
+        .bind(keep_count)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -512,6 +514,7 @@ impl JobContext {
             .get("schema_only")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let (_, _, encrypt, _) = self.backup_policy().await;
 
         let (username, password) = match self
             .load_credential_password(cluster_id, "pgpanel_backup")
@@ -541,7 +544,7 @@ impl JobContext {
             "logical_full"
         })
         .bind(&database)
-        .bind(if self.config.backup_encrypt { 1 } else { 0 })
+        .bind(if encrypt { 1 } else { 0 })
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -557,7 +560,7 @@ impl JobContext {
                 username,
                 password: password.expose_secret().to_string(),
                 schema_only,
-                encrypt: self.config.backup_encrypt,
+                encrypt,
             })
             .await;
 
@@ -654,6 +657,35 @@ impl JobContext {
             "pg_restore_list": listing.chars().take(4000).collect::<String>(),
             "ok": true,
         }))
+    }
+
+    async fn backup_policy(&self) -> (i64, i64, bool, i64) {
+        let get = |key: &'static str| async move {
+            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+        };
+        let retention = get("backup.retention_days")
+            .await
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.config.backup_retention_days as i64);
+        let keep_count = get("backup.keep_count")
+            .await
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.config.backup_keep_count as i64);
+        let encrypt = get("backup.encrypt")
+            .await
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(self.config.backup_encrypt);
+        let schedule_hour = get("backup.schedule_hour")
+            .await
+            .and_then(|v| v.parse().ok())
+            .filter(|hour: &i64| (0..=23).contains(hour))
+            .unwrap_or(3);
+        (retention, keep_count, encrypt, schedule_hour)
     }
 
     async fn handle_refresh_metrics(&self, op: &Operation) -> Result<serde_json::Value> {

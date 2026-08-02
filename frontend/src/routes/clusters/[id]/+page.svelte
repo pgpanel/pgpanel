@@ -63,7 +63,7 @@
 {#if cluster}
 	<PageHeader title={cluster.name} description={`${cluster.slug} · PostgreSQL ${cluster.postgres_version}`}>
 		{#snippet actions()}
-			<StatusBadge status={cluster.status} />
+			<StatusBadge status={cluster?.status ?? 'unknown'} />
 			<Button variant="outline" size="sm" disabled={!!busy} onclick={() => action('start', 'Start')}>
 				<HugeiconsIcon icon={PlayIcon} class="size-4" strokeWidth={2} />
 				Start
