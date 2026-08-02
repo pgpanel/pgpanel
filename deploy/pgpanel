@@ -63,6 +63,7 @@ Usage:
   pgpanel start|stop|restart
   pgpanel logs [service]
   pgpanel update              # upgrade without data loss
+  pgpanel resume              # continue interrupted install (keeps answers)
   pgpanel version             # local + remote version check
   pgpanel repair
   pgpanel configure
@@ -150,6 +151,7 @@ main() {
     restart) need_root "$@"; compose restart ;;
     logs) shift; compose logs -f --tail=200 "$@" ;;
     update) need_root "$@"; exec bash "$INSTALLER" --mode update ;;
+    resume|continue) need_root "$@"; exec bash "$INSTALLER" --mode resume ;;
     version|version-check) cmd_version ;;
     repair) need_root "$@"; exec bash "$INSTALLER" --mode repair ;;
     configure) need_root "$@"; exec bash "$INSTALLER" --mode configure ;;

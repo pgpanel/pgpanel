@@ -17,7 +17,7 @@
 set -Eeuo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly INSTALLER_VERSION="1.2.0"
+readonly INSTALLER_VERSION="1.3.0"
 readonly PGPANEL_AUTHOR="Dezső Benedek Péter"
 readonly PGPANEL_OFFICIAL_REPO="https://github.com/pgpanel/pgpanel.git"
 readonly PGPANEL_GHCR_IMAGE="ghcr.io/pgpanel/pgpanel"
@@ -26,6 +26,8 @@ readonly PGPANEL_DEFAULT_DATA_DIR="/var/lib/pgpanel"
 readonly PGPANEL_DEFAULT_LOG_DIR="/var/log/pgpanel"
 readonly PGPANEL_ETC_DIR="/etc/pgpanel"
 readonly PGPANEL_CONF="${PGPANEL_ETC_DIR}/installer.conf"
+readonly PGPANEL_ANSWERS_FILE="${PGPANEL_ETC_DIR}/install-answers.env"
+readonly PGPANEL_PROGRESS_FILE="${PGPANEL_ETC_DIR}/install-progress.env"
 readonly PGPANEL_CLI_PATH="/usr/local/bin/pgpanel"
 readonly MIN_CPU=2
 readonly MIN_RAM_MB=4096
@@ -171,22 +173,226 @@ cleanup() {
   if [[ -n "${TMPDIR_INSTALL:-}" && -d "${TMPDIR_INSTALL}" ]]; then
     rm -rf "${TMPDIR_INSTALL}" 2>/dev/null || true
   fi
+  # Persist failure point for resume (answers already saved after prompts)
+  if [[ $ec -ne 0 && "$INSTALL_PHASE" != "init" && "$INSTALL_PHASE" != "done" ]]; then
+    write_progress_meta "failed" || true
+  fi
   if [[ $INTERRUPTED -eq 1 ]]; then
-    log_warn "Interrupted (Ctrl+C). Partial state may remain; run: pgpanel repair"
+    log_warn "Interrupted (Ctrl+C). Answers and progress were saved."
+    log_info "Continue: sudo bash /opt/pgpanel/deploy/install.sh --mode resume"
+    log_info "Or menu → Telepítés folytatása"
   elif [[ $ec -ne 0 && "$INSTALL_PHASE" != "init" && "$INSTALL_PHASE" != "done" ]]; then
     log_error "Installer failed during phase: ${INSTALL_PHASE}"
     log_info "Logs: ${LOG_FILE:-n/a}"
-    log_info "Repair: sudo pgpanel repair  |  Full log: tail -200 ${LOG_FILE:-/var/log/pgpanel/installer.log}"
+    log_info "Continue (keeps your answers): sudo bash /opt/pgpanel/deploy/install.sh --mode resume"
+    log_info "Repair only:              sudo pgpanel repair"
+    log_info "Full log:                 tail -200 ${LOG_FILE:-/var/log/pgpanel/installer.log}"
   fi
 }
 trap cleanup EXIT
-on_interrupt() { INTERRUPTED=1; exit 130; }
+on_interrupt() {
+  INTERRUPTED=1
+  write_progress_meta "interrupted" || true
+  exit 130
+}
 trap on_interrupt INT TERM
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Log command output without SIGPIPE / pipefail crashes (e.g. docker | head)
+log_cmd_preview() {
+  local max="${1:-8}"
+  shift
+  local out=""
+  out="$("$@" 2>&1)" || true
+  local i=0 line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    log_info "  $line"
+    i=$((i + 1))
+    (( i >= max )) && break
+  done <<<"$out"
+}
+
+# ── Install progress / answers (resume support) ──────────────────────────────
+write_progress_meta() {
+  local status="${1:-in_progress}"
+  mkdir -p "$PGPANEL_ETC_DIR"
+  local tmp
+  tmp="$(mktemp)"
+  {
+    echo "STATUS=${status}"
+    echo "LAST_PHASE=${INSTALL_PHASE}"
+    echo "UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "INSTALLER_VERSION=${INSTALLER_VERSION}"
+    if [[ -f "$PGPANEL_PROGRESS_FILE" ]]; then
+      grep -E '^STEP_' "$PGPANEL_PROGRESS_FILE" 2>/dev/null || true
+    fi
+  } >"$tmp"
+  chmod 0640 "$tmp"
+  mv -f "$tmp" "$PGPANEL_PROGRESS_FILE"
+}
+
+mark_step_done() {
+  local step="$1"
+  mkdir -p "$PGPANEL_ETC_DIR"
+  touch "$PGPANEL_PROGRESS_FILE"
+  chmod 0640 "$PGPANEL_PROGRESS_FILE" 2>/dev/null || true
+  if grep -q "^STEP_${step}=" "$PGPANEL_PROGRESS_FILE" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    awk -v k="STEP_${step}" 'BEGIN{FS=OFS="="} $1==k {$0=k"=done"} {print}' \
+      "$PGPANEL_PROGRESS_FILE" >"$tmp"
+    mv -f "$tmp" "$PGPANEL_PROGRESS_FILE"
+  else
+    echo "STEP_${step}=done" >>"$PGPANEL_PROGRESS_FILE"
+  fi
+  INSTALL_PHASE="$step"
+  write_progress_meta "in_progress"
+  log_ok "Step complete: ${step}"
+}
+
+is_step_done() {
+  local step="$1"
+  [[ -f "$PGPANEL_PROGRESS_FILE" ]] || return 1
+  grep -q "^STEP_${step}=done$" "$PGPANEL_PROGRESS_FILE" 2>/dev/null
+}
+
+clear_install_progress() {
+  rm -f "$PGPANEL_PROGRESS_FILE"
+}
+
+# Save all non-transient installer answers (incl. passwords) with 0600
+save_install_answers() {
+  mkdir -p "$PGPANEL_ETC_DIR"
+  umask 077
+  local tmp
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
+# PgPanel install answers — mode 0600. Do not share.
+# Saved: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+INSTALL_DIR=${INSTALL_DIR}
+DATA_DIR=${DATA_DIR}
+CLUSTER_DATA_DIR=${CLUSTER_DATA_DIR}
+LOG_DIR=${LOG_DIR}
+BACKUP_CACHE_DIR=${BACKUP_CACHE_DIR}
+REPO_URL=${PGPANEL_OFFICIAL_REPO}
+GIT_REF=${GIT_REF}
+UPDATE_CHANNEL=${UPDATE_CHANNEL}
+USE_DOMAIN=${USE_DOMAIN}
+PANEL_DOMAIN=${PANEL_DOMAIN}
+DATABASUS_DOMAIN=${DATABASUS_DOMAIN}
+DATABASUS_PUBLIC=${DATABASUS_PUBLIC}
+LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+ENABLE_HTTPS=${ENABLE_HTTPS}
+PUBLIC_PG_PORTS=${PUBLIC_PG_PORTS}
+ADMIN_IP_ALLOWLIST=${ADMIN_IP_ALLOWLIST}
+SSH_PORT=${SSH_PORT}
+CONFIGURE_UFW=${CONFIGURE_UFW}
+BEHIND_CLOUDFLARE=${BEHIND_CLOUDFLARE}
+USE_CLOUDFLARE_TUNNEL=${USE_CLOUDFLARE_TUNNEL}
+ADMIN_USERNAME=${ADMIN_USERNAME}
+ADMIN_EMAIL=${ADMIN_EMAIL}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+ADMIN_PASSWORD_GENERATED=${ADMIN_PASSWORD_GENERATED}
+PREPARE_2FA=${PREPARE_2FA}
+SESSION_TTL_HOURS=${SESSION_TTL_HOURS}
+LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS}
+PG_DEFAULT_VERSION=${PG_DEFAULT_VERSION}
+PG_ALLOWED_VERSIONS=${PG_ALLOWED_VERSIONS}
+PG_DEFAULT_CPU=${PG_DEFAULT_CPU}
+PG_DEFAULT_MEMORY_MB=${PG_DEFAULT_MEMORY_MB}
+PG_DEFAULT_STORAGE_GB=${PG_DEFAULT_STORAGE_GB}
+PG_TIMEZONE=${PG_TIMEZONE}
+PG_LOCALE=${PG_LOCALE}
+PG_MAX_CLUSTERS=${PG_MAX_CLUSTERS}
+PG_CLUSTER_PREFIX=${PG_CLUSTER_PREFIX}
+PG_AUTO_RESTART=${PG_AUTO_RESTART}
+ENABLE_DATABASUS=${ENABLE_DATABASUS}
+DATABASUS_ADMIN_EMAIL=${DATABASUS_ADMIN_EMAIL}
+DATABASUS_ADMIN_PASSWORD=${DATABASUS_ADMIN_PASSWORD}
+BACKUP_STORAGE_TYPE=${BACKUP_STORAGE_TYPE}
+S3_ENDPOINT=${S3_ENDPOINT}
+S3_REGION=${S3_REGION}
+S3_BUCKET=${S3_BUCKET}
+S3_ACCESS_KEY=${S3_ACCESS_KEY}
+S3_SECRET_KEY=${S3_SECRET_KEY}
+S3_PATH_STYLE=${S3_PATH_STYLE}
+S3_PREFIX=${S3_PREFIX}
+S3_TLS_VERIFY=${S3_TLS_VERIFY}
+S3_ENCRYPT=${S3_ENCRYPT}
+BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
+BACKUP_MAX_COUNT=${BACKUP_MAX_COUNT}
+BACKUP_FULL_FREQ=${BACKUP_FULL_FREQ}
+BACKUP_INCR_FREQ=${BACKUP_INCR_FREQ}
+BACKUP_WAL_STREAMING=${BACKUP_WAL_STREAMING}
+BACKUP_RESTORE_VERIFY=${BACKUP_RESTORE_VERIFY}
+BACKUP_FIRST_NOW=${BACKUP_FIRST_NOW}
+NOTIFY_TYPE=${NOTIFY_TYPE}
+SMTP_HOST=${SMTP_HOST}
+SMTP_PORT=${SMTP_PORT}
+SMTP_TLS=${SMTP_TLS}
+SMTP_USER=${SMTP_USER}
+SMTP_PASSWORD=${SMTP_PASSWORD}
+SMTP_FROM=${SMTP_FROM}
+SMTP_TO=${SMTP_TO}
+WEBHOOK_URL=${WEBHOOK_URL}
+WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
+TIMEZONE_SET=${TIMEZONE_SET}
+CREATE_SWAP=${CREATE_SWAP}
+SWAP_SIZE_MB=${SWAP_SIZE_MB}
+ENABLE_WATCHTOWER=${ENABLE_WATCHTOWER}
+PGPANEL_BUILD_LOCAL=${PGPANEL_BUILD_LOCAL}
+EOF
+  chmod 0600 "$tmp"
+  chown root:root "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$PGPANEL_ANSWERS_FILE"
+  chmod 0600 "$PGPANEL_ANSWERS_FILE"
+  log_ok "Answers saved → ${PGPANEL_ANSWERS_FILE}"
+}
+
+load_install_answers() {
+  if [[ ! -f "$PGPANEL_ANSWERS_FILE" ]]; then
+    return 1
+  fi
+  # shellcheck source=/dev/null
+  set -a
+  # shellcheck disable=SC1090
+  source "$PGPANEL_ANSWERS_FILE"
+  set +a
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
+  log_info "Loaded saved answers from ${PGPANEL_ANSWERS_FILE}"
+  return 0
+}
+
+has_resumable_install() {
+  [[ -f "$PGPANEL_PROGRESS_FILE" ]] || return 1
+  local st
+  st="$(grep '^STATUS=' "$PGPANEL_PROGRESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  [[ "$st" == "failed" || "$st" == "interrupted" || "$st" == "in_progress" ]]
+}
+
+# Run a step unless already done (for resume)
+run_step() {
+  local step_id="$1"
+  local step_no="$2"
+  local step_total="$3"
+  local step_title="$4"
+  shift 4
+  INSTALL_PHASE="$step_id"
+  if is_step_done "$step_id"; then
+    log_ok "Skip (already done): [${step_no}/${step_total}] ${step_title}"
+    return 0
+  fi
+  write_progress_meta "in_progress"
+  log_step "$step_no" "$step_total" "$step_title"
+  # shellcheck disable=SC2068
+  "$@"
+  mark_step_done "$step_id"
+}
 
 run_as_root() {
   if [[ "${EUID}" -eq 0 ]]; then
@@ -229,17 +435,7 @@ ensure_interactive_stdin() {
     log_warn "No TTY; mode=${CLI_MODE} will use defaults (non-interactive)"
     return 0
   fi
-  die "No interactive terminal.
-
-curl|bash needs a real TTY. Prefer:
-
-  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh -o /tmp/ip.sh
-  sudo bash /tmp/ip.sh
-
-Or after clone:
-
-  sudo bash /opt/pgpanel/deploy/install.sh
-  sudo bash /opt/pgpanel/deploy/install.sh --mode install"
+  die "No interactive terminal. Prefer: curl -sSL ... -o /tmp/ip.sh && sudo bash /tmp/ip.sh  OR  sudo bash /opt/pgpanel/deploy/install.sh --mode resume"
 }
 
 # Read a line from the user; fails cleanly on EOF (no infinite empty loops).
@@ -594,7 +790,7 @@ EOF
   fi
 
   if have_cmd docker; then
-    log_ok "Docker CLI present: $(docker --version 2>/dev/null | head -1)"
+    log_ok "Docker CLI present: $(docker --version 2>/dev/null || true)"
     if docker info >/dev/null 2>&1; then
       log_ok "Docker daemon running"
     else
@@ -655,7 +851,6 @@ pkg_install() {
 }
 
 install_base_packages() {
-  log_step 2 15 "Csomagok telepítése"
   pkg_update
 
   local pkgs=()
@@ -686,12 +881,15 @@ install_base_packages() {
 
 # ── Docker install ───────────────────────────────────────────────────────────
 install_docker() {
-  log_step 3 15 "Docker telepítése"
-
+  # Note: log_step may be called by run_step already — safe to call again for standalone use
   if have_cmd docker && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log_ok "Docker already operational"
-    docker version 2>&1 | head -5 | while read -r l; do log_info "  $l"; done
-    docker compose version 2>&1 | while read -r l; do log_info "  $l"; done
+    # Never pipe docker into head under pipefail (SIGPIPE → exit 141)
+    local dv cv
+    dv="$(docker version --format 'Client {{.Client.Version}} / Server {{.Server.Version}}' 2>/dev/null || true)"
+    cv="$(docker compose version --short 2>/dev/null || true)"
+    [[ -n "$dv" ]] && log_info "  Docker: ${dv}"
+    [[ -n "$cv" ]] && log_info "  Compose: ${cv}"
     return 0
   fi
 
@@ -766,15 +964,22 @@ install_docker() {
     sleep 1
   done
 
-  docker version >/dev/null || die "docker version failed"
-  docker compose version >/dev/null || die "docker compose version failed"
-  docker info >/dev/null || die "docker info failed"
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker installed but daemon not reachable (try: systemctl start docker)"
+  fi
+  if ! docker compose version >/dev/null 2>&1; then
+    die "Docker Compose plugin missing after install"
+  fi
   log_ok "Docker Engine and Compose ready"
+  local dv cv
+  dv="$(docker version --format 'Client {{.Client.Version}} / Server {{.Server.Version}}' 2>/dev/null || true)"
+  cv="$(docker compose version --short 2>/dev/null || true)"
+  [[ -n "$dv" ]] && log_info "  Docker: ${dv}"
+  [[ -n "$cv" ]] && log_info "  Compose: ${cv}"
 }
 
 # ── Directories ──────────────────────────────────────────────────────────────
 create_directories() {
-  log_step 4 15 "Könyvtárak létrehozása"
   local dirs=(
     "$INSTALL_DIR"
     "$DATA_DIR"
@@ -828,8 +1033,9 @@ get_remote_version() {
     return 0
   fi
   # Fallback: latest GitHub release tag
-  v="$(timeout_cmd "$NETWORK_TIMEOUT" curl -fsSL https://api.github.com/repos/pgpanel/pgpanel/releases/latest 2>/dev/null \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/^v//')"
+  local rel_json
+  rel_json="$(timeout_cmd "$NETWORK_TIMEOUT" curl -fsSL https://api.github.com/repos/pgpanel/pgpanel/releases/latest 2>/dev/null || true)"
+  v="$(printf '%s' "$rel_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/^v//')"
   if [[ -n "$v" ]]; then
     printf '%s' "$v"
     return 0
@@ -874,7 +1080,6 @@ show_version_status() {
 
 # ── Repository (official only — never asked) ─────────────────────────────────
 clone_or_update_repo() {
-  log_step 5 15 "Hivatalos repository szinkronizálása"
   REPO_URL="$PGPANEL_OFFICIAL_REPO"
 
   # Prefer syncing from current tree if we are already inside this checkout
@@ -953,7 +1158,6 @@ upsert_env_key() {
 }
 
 generate_or_load_secrets() {
-  log_step 6 15 "Titkok generálása"
   local env_file="${INSTALL_DIR}/.env"
 
   resolve_panel_image
@@ -1104,7 +1308,6 @@ EOF
 
 # ── Config file (non-secret) ─────────────────────────────────────────────────
 save_installer_conf() {
-  log_step 7 15 "Konfiguráció elkészítése"
   mkdir -p "$PGPANEL_ETC_DIR"
   cat >"$PGPANEL_CONF" <<EOF
 # PgPanel installer configuration (non-secret)
@@ -1453,7 +1656,6 @@ prepare_compose_networks() {
 }
 
 ensure_docker_networks() {
-  log_step 8 15 "Docker hálózatok"
   log_info "Networks are managed by Docker Compose (not pre-created)"
   prepare_compose_networks
   log_ok "Network prep done"
@@ -1507,7 +1709,7 @@ EOF
   fi
 
   ufw --force enable || true
-  ufw status verbose | while read -r l; do log_info "ufw: $l"; done
+  log_cmd_preview 12 ufw status verbose
   log_ok "UFW configured"
 }
 
@@ -1563,9 +1765,7 @@ EOF
 
 # ── Build & start ────────────────────────────────────────────────────────────
 build_and_start() {
-  log_step 11 15 "Docker image-ek letöltése (előre fordított panel)"
-  log_step 12 15 "Szolgáltatások indítása"
-  INSTALL_PHASE="compose_up"
+  INSTALL_PHASE="start"
   resolve_panel_image
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
@@ -1611,7 +1811,6 @@ build_and_start() {
 
 # ── Health checks ────────────────────────────────────────────────────────────
 health_check() {
-  log_step 13 15 "Health check"
   INSTALL_PHASE="health"
   local failed=0
   sleep 5
@@ -2134,15 +2333,7 @@ EOF
 }
 
 # ── Main install flow ────────────────────────────────────────────────────────
-do_fresh_install() {
-  INSTALL_PHASE="preflight"
-  mkdir -p "$LOG_DIR"
-  LOG_FILE="${LOG_DIR}/installer.log"
-  touch "$LOG_FILE"
-  chmod 0640 "$LOG_FILE"
-  log_info "PgPanel installer ${INSTALLER_VERSION} starting (fresh install)"
-
-  preflight_checks
+collect_install_answers() {
   prompt_base_settings
   prompt_network
   prompt_admin
@@ -2152,32 +2343,157 @@ do_fresh_install() {
   prompt_yesno CREATE_SWAP "Swap létrehozása ha nincs?" "n"
   prompt_yesno ENABLE_WATCHTOWER "Watchtower auto-update konténer?" "n"
   show_summary_and_confirm
+  save_install_answers
+  mark_step_done "prompts"
+}
 
-  install_base_packages
-  install_docker
-  create_directories
-  clone_or_update_repo
-  generate_or_load_secrets
-  save_installer_conf
-  configure_system_tuning
-  ensure_docker_networks
-  log_step 9 15 "Caddy konfiguráció"
-  render_caddyfile
-  log_step 10 15 "Databasus / Compose konfiguráció"
-  render_compose
-  configure_firewall
-  build_and_start
-  install_cli
-  health_check || true
-  if [[ "$BACKUP_STORAGE_TYPE" =~ ^(s3|r2|b2|hetzner|minio)$ ]]; then
-    storage_test_menu || true
+run_install_pipeline() {
+  # $1 = resume (1) or fresh (0) — when resume, skip re-prompt
+  local resume="${1:-0}"
+  local total=15
+
+  run_step preflight 1 "$total" "Rendszer ellenőrzése" preflight_checks
+
+  if [[ "$resume" -eq 0 ]] || ! is_step_done prompts; then
+    INSTALL_PHASE="prompts"
+    write_progress_meta "in_progress"
+    collect_install_answers
   else
-    log_step 14 15 "Backup storage teszt (kihagyva / manuális)"
-    log_warn "Databasus automatic provisioning uses Manual adapter until API verified"
+    log_ok "Skip (already done): prompts — using saved answers"
+    load_install_answers || die "Cannot load ${PGPANEL_ANSWERS_FILE}"
   fi
+
+  # Always re-save conf paths after answers load
+  mkdir -p "$LOG_DIR"
+  LOG_FILE="${LOG_DIR}/installer.log"
+  touch "$LOG_FILE"
+  chmod 0640 "$LOG_FILE" 2>/dev/null || true
+
+  run_step packages 2 "$total" "Csomagok telepítése" install_base_packages
+  run_step docker 3 "$total" "Docker telepítése" install_docker
+  run_step directories 4 "$total" "Könyvtárak létrehozása" create_directories
+  run_step repository 5 "$total" "Hivatalos repository szinkronizálása" clone_or_update_repo
+  run_step secrets 6 "$total" "Titkok generálása / betöltése" generate_or_load_secrets
+  run_step config 7 "$total" "Konfiguráció mentése" save_installer_conf
+  run_step tuning 8 "$total" "Rendszer beállítások" configure_system_tuning
+  run_step networks 9 "$total" "Docker hálózatok előkészítése" ensure_docker_networks
+
+  if ! is_step_done caddy; then
+    INSTALL_PHASE="caddy"
+    write_progress_meta "in_progress"
+    log_step 10 "$total" "Caddy konfiguráció"
+    render_caddyfile
+    mark_step_done "caddy"
+  else
+    log_ok "Skip (already done): [10/${total}] Caddy konfiguráció"
+  fi
+
+  if ! is_step_done compose_file; then
+    INSTALL_PHASE="compose_file"
+    write_progress_meta "in_progress"
+    log_step 11 "$total" "Compose konfiguráció"
+    render_compose
+    mark_step_done "compose_file"
+  else
+    log_ok "Skip (already done): [11/${total}] Compose konfiguráció"
+    render_compose # refresh paths/image pins
+  fi
+
+  run_step firewall 12 "$total" "Tűzfal" configure_firewall
+  run_step start 13 "$total" "Image pull / szolgáltatások indítása" build_and_start
+  run_step cli 13 "$total" "CLI telepítése" install_cli
+
+  if ! is_step_done health; then
+    INSTALL_PHASE="health"
+    write_progress_meta "in_progress"
+    log_step 14 "$total" "Health check"
+    health_check || log_warn "Health check incomplete — you can re-run: --mode resume"
+    mark_step_done "health"
+  else
+    log_ok "Skip (already done): health"
+  fi
+
+  if ! is_step_done storage; then
+    INSTALL_PHASE="storage"
+    write_progress_meta "in_progress"
+    if [[ "$BACKUP_STORAGE_TYPE" =~ ^(s3|r2|b2|hetzner|minio)$ ]]; then
+      storage_test_menu || log_warn "Storage test skipped/failed"
+    else
+      log_step 15 "$total" "Backup storage (később / manuális)"
+      log_info "Backup storage type: ${BACKUP_STORAGE_TYPE}"
+    fi
+    mark_step_done "storage"
+  fi
+
   send_test_notification || true
   write_install_summary
+  write_progress_meta "done"
+  mark_step_done "complete"
+  INSTALL_PHASE="done"
   print_final_message
+}
+
+do_fresh_install() {
+  mkdir -p "$LOG_DIR" "$PGPANEL_ETC_DIR"
+  LOG_FILE="${LOG_DIR}/installer.log"
+  touch "$LOG_FILE"
+  chmod 0640 "$LOG_FILE"
+  log_info "PgPanel installer ${INSTALLER_VERSION} starting (fresh install)"
+
+  if has_resumable_install || [[ -f "$PGPANEL_ANSWERS_FILE" ]]; then
+    log_warn "Saved answers / incomplete install found."
+    if confirm "Continue previous install (keep answers)?" "Y"; then
+      do_resume_install
+      return 0
+    fi
+    if confirm "Start completely fresh (discard saved install progress)?" "N"; then
+      clear_install_progress
+      # keep answers unless user wants wipe
+      if confirm "Also discard saved answers (${PGPANEL_ANSWERS_FILE})?" "N"; then
+        rm -f "$PGPANEL_ANSWERS_FILE"
+      fi
+    else
+      do_resume_install
+      return 0
+    fi
+  fi
+
+  clear_install_progress
+  write_progress_meta "in_progress"
+  run_install_pipeline 0
+}
+
+do_resume_install() {
+  mkdir -p "$LOG_DIR" "$PGPANEL_ETC_DIR"
+  LOG_FILE="${LOG_DIR}/installer.log"
+  touch "$LOG_FILE"
+  chmod 0640 "$LOG_FILE"
+  log_info "Resuming install (installer ${INSTALLER_VERSION})"
+
+  if ! load_install_answers; then
+    log_warn "No answers file — collecting answers again"
+    clear_install_progress
+    write_progress_meta "in_progress"
+    run_install_pipeline 0
+    return 0
+  fi
+
+  load_installer_conf 2>/dev/null || true
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
+
+  if [[ -f "$PGPANEL_PROGRESS_FILE" ]]; then
+    log_info "Progress file: ${PGPANEL_PROGRESS_FILE}"
+    grep -E '^(STATUS|LAST_PHASE|STEP_)' "$PGPANEL_PROGRESS_FILE" 2>/dev/null | while read -r l; do
+      log_info "  $l"
+    done || true
+  fi
+
+  if ! confirm "Resume install with saved answers (domain=${PANEL_DOMAIN})?" "Y"; then
+    die "Resume cancelled"
+  fi
+
+  write_progress_meta "in_progress"
+  run_install_pipeline 1
 }
 
 send_test_notification() {
@@ -2600,6 +2916,7 @@ main_menu() {
   if [[ -n "$CLI_MODE" ]]; then
     case "$CLI_MODE" in
       install|new) do_fresh_install ;;
+      resume|continue) do_resume_install ;;
       update) do_update ;;
       repair) do_repair ;;
       configure) do_configure ;;
@@ -2621,45 +2938,48 @@ main_menu() {
     lv="$(get_local_version 2>/dev/null || echo '?')"
     rv="$(get_remote_version main 2>/dev/null || echo '?')"
     echo "  Telepített verzió: ${lv}  ·  Elérhető: ${rv}"
+    if has_resumable_install 2>/dev/null; then
+      local lastp
+      lastp="$(grep '^LAST_PHASE=' "$PGPANEL_PROGRESS_FILE" 2>/dev/null | cut -d= -f2- || echo '?')"
+      echo "  ${C_YELLOW}Félbeszakadt telepítés:${C_RESET} phase=${lastp} → válaszd a 2-est"
+    fi
     echo ""
     echo "1. Új telepítés"
-    echo "2. Frissítés új verzióra (adatok megmaradnak)"
-    echo "3. Telepítés javítása"
-    echo "4. Konfiguráció módosítása"
-    echo "5. Biztonsági ellenőrzés"
-    echo "6. Verzió ellenőrzése"
-    echo "7. Backup-integráció tesztelése"
-    echo "8. Teljes rendszer eltávolítása"
-    echo "9. Kilépés"
+    echo "2. Telepítés folytatása (mentett válaszok / félbemaradt)"
+    echo "3. Frissítés új verzióra (adatok megmaradnak)"
+    echo "4. Telepítés javítása"
+    echo "5. Konfiguráció módosítása"
+    echo "6. Biztonsági ellenőrzés"
+    echo "7. Verzió ellenőrzése"
+    echo "8. Backup-integráció tesztelése"
+    echo "9. Teljes rendszer eltávolítása"
+    echo "0. Kilépés"
     echo ""
     local choice
-    if ! read_user "Választás [1-9]: "; then
-      die "Menu input closed (EOF). Use an interactive SSH session, or:
-  sudo bash /opt/pgpanel/deploy/install.sh --mode install"
+    if ! read_user "Választás [0-9]: "; then
+      die "Menu input closed (EOF). Use: sudo bash /opt/pgpanel/deploy/install.sh --mode resume"
     fi
     choice="${REPLY}"
     case "${choice}" in
       1) do_fresh_install; break ;;
-      2) do_update; break ;;
-      3) do_repair; break ;;
-      4) do_configure; break ;;
-      5) do_security_check ;;
-      6) do_version_check ;;
-      7) do_backup_test ;;
-      8) do_uninstall; break ;;
-      9) exit 0 ;;
+      2) do_resume_install; break ;;
+      3) do_update; break ;;
+      4) do_repair; break ;;
+      5) do_configure; break ;;
+      6) do_security_check ;;
+      7) do_version_check ;;
+      8) do_backup_test ;;
+      9) do_uninstall; break ;;
+      0) exit 0 ;;
       *)
         bad_inputs=$((bad_inputs + 1))
         if [[ -z "$choice" ]]; then
-          log_warn "Empty choice (${bad_inputs}/5) — type a number 1-9"
+          log_warn "Empty choice (${bad_inputs}/5) — type a number 0-9"
         else
           log_warn "Invalid choice: '${choice}' (${bad_inputs}/5)"
         fi
         if (( bad_inputs >= 5 )); then
-          die "Too many invalid/empty menu inputs — aborting.
-  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh -o /tmp/ip.sh
-  sudo bash /tmp/ip.sh
-Or: sudo bash /opt/pgpanel/deploy/install.sh --mode update"
+          die "Too many invalid/empty menu inputs. Resume with: sudo bash /opt/pgpanel/deploy/install.sh --mode resume"
         fi
         ;;
     esac
@@ -2685,12 +3005,15 @@ Usage:
   curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 
   sudo bash deploy/install.sh
-  sudo bash deploy/install.sh --mode install|update|repair|configure|security|version|uninstall
+  sudo bash deploy/install.sh --mode install|resume|update|repair|configure|security|version|uninstall
+  sudo bash deploy/install.sh --mode resume    # continue after failure (keeps answers)
   sudo bash deploy/install.sh --mode update --force-update
   sudo bash deploy/install.sh --build-local   # only if pre-built image unavailable
 
 Official repo is fixed: ${PGPANEL_OFFICIAL_REPO}
 Pre-built image: ${PGPANEL_GHCR_IMAGE}:<version>
+Answers:  ${PGPANEL_ANSWERS_FILE}
+Progress: ${PGPANEL_PROGRESS_FILE}
 EOF
         exit 0
         ;;
