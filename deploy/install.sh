@@ -1235,7 +1235,7 @@ PGPANEL_UPDATE_CHANNEL=${UPDATE_CHANNEL}
 PGPANEL_VERSION=${PGPANEL_VERSION}
 PGPANEL_IMAGE=${PGPANEL_IMAGE}
 PGPANEL_HOST_DATA=${DATA_DIR}
-PGPANEL_PULL_POLICY=always
+PGPANEL_PULL_POLICY=missing
 
 # Shared Docker network: panel + PostgreSQL clusters (DNS for pgpanel_pg_*)
 PGPANEL_MANAGEMENT_NETWORK=pgpanel_database_management
@@ -1415,7 +1415,9 @@ services:
 
   panel:
     image: \${PGPANEL_IMAGE:-${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}}
-    pull_policy: \${PGPANEL_PULL_POLICY:-always}
+    # The installer pulls the panel image explicitly before startup. `missing`
+    # keeps a temporary registry outage from preventing a restart.
+    pull_policy: \${PGPANEL_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
       - ../.env
@@ -1713,7 +1715,9 @@ build_and_start() {
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_HOST_DATA" "$DATA_DIR"
-  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "always"
+  # Compose must not resolve the image remotely just to start a locally
+  # verified image. Updates still pull the requested tag in ensure_panel_image.
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
 
   prepare_compose_networks
   render_compose
@@ -1722,7 +1726,7 @@ build_and_start() {
 
   (
     cd "${INSTALL_DIR}/deploy"
-    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=always
+    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
     set -a
     # shellcheck source=/dev/null
     source "${INSTALL_DIR}/.env"
@@ -1737,13 +1741,16 @@ build_and_start() {
       || die "Failed to pull Caddy image (check network)"
 
     # Never use -v: data volumes must survive restarts/updates
-    if ! docker compose -f compose.yml up -d --remove-orphans --no-build; then
+    # Both images are now known to be local.  Do not let Compose make a second
+    # GHCR request, which would turn a transient registry timeout into a failed
+    # install or resume.
+    if ! PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build; then
       log_error "compose up failed — retrying after network cleanup"
       prepare_compose_networks
       docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
       prepare_compose_networks
       ensure_panel_image
-      docker compose -f compose.yml up -d --remove-orphans --no-build
+      PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build
     fi
   )
   log_ok "Services started (images pulled, no local build)"
@@ -2607,6 +2614,7 @@ do_repair() {
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_MANAGEMENT_NETWORK" "pgpanel_database_management"
   upsert_env_key "${INSTALL_DIR}/.env" "BACKUP_STORAGE_TYPE" "${BACKUP_STORAGE_TYPE:-local}"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_BACKUP_DIR" "/var/lib/pgpanel/backups"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
   # Remove orphaned Databasus service if present from older installs
   (
     cd "${INSTALL_DIR}/deploy" 2>/dev/null || exit 0
@@ -2663,6 +2671,7 @@ do_configure() {
     prompt_databasus
   fi
   save_installer_conf
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
   # Refresh env non-secret fields carefully without wiping keys
   render_caddyfile
   render_compose

@@ -61,7 +61,9 @@ services:
   panel:
     # Pre-built only — installer never builds on the VPS.
     image: ${PGPANEL_IMAGE:-ghcr.io/pgpanel/pgpanel:0.1.0}
-    pull_policy: ${PGPANEL_PULL_POLICY:-always}
+    # The installer pulls the panel image explicitly before startup.  `missing`
+    # keeps a temporary registry outage from preventing a restart.
+    pull_policy: ${PGPANEL_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
       - ../.env
