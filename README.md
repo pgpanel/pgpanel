@@ -125,14 +125,20 @@ cd /path/to/pgpanel
 
 ## Features
 
-- Admin bootstrap + session login (Argon2id, server-side sessions, CSRF)  
+- Admin bootstrap + **multi-user RBAC** (owner / admin / operator / viewer)  
 - PostgreSQL **16 / 17 / 18** only (no `:latest`)  
 - Cluster lifecycle: create, start, stop, restart, delete modes  
+- **Multi-node**: multiple Docker hosts from one panel  
+- **Replicas / redundancy**: duplicate or scheduled sync within a node or across nodes; promote  
 - Databases & roles, password rotation  
 - Read-only browser + SQL console (parser + `READ ONLY`)  
+- **Named backup destinations** — any cluster/node → any storage target (local/S3/R2/B2/MinIO/Hetzner)  
+- Per-cluster multi-destination schedules, restore, verify, retention prune  
+- **WAF** policy editor with change history + Caddy snippet export  
+- **Monitoring & analytics** + alert rules (CPU/mem/backup age/replica lag)  
+- API tokens for automation  
 - Durable job queue + SSE  
 - Caddy HTTPS reverse proxy  
-- Databasus adapter (HTTP / manual / mock)  
 - Idempotent installer with **resume** after failure  
 
 ---

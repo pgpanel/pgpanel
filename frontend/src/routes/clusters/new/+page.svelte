@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { api } from '$lib/api';
+	import { onMount } from 'svelte';
+	import { api, type Node } from '$lib/api';
 	import { trackOperation } from '$lib/jobs';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -30,9 +31,24 @@
 	let loading = $state(false);
 	let createdId = $state('');
 	let opProgress = $state('');
+	let nodes = $state<Node[]>([]);
+	let node_id = $state('');
 
 	const versionLabel = $derived(`PostgreSQL ${postgres_version}`);
 	const namePattern = '^[a-z][a-z0-9_]{2,62}$';
+	const selectedNodeLabel = $derived(
+		nodes.find((n) => n.id === node_id)?.name ?? 'Select node'
+	);
+
+	onMount(async () => {
+		try {
+			nodes = await api<Node[]>('/api/nodes');
+			const defaultNode = nodes.find((n) => n.is_default) ?? nodes[0];
+			if (defaultNode) node_id = defaultNode.id;
+		} catch {
+			/* optional — cluster can still be created on local node */
+		}
+	});
 
 	async function submit(e: Event) {
 		e.preventDefault();
@@ -65,6 +81,7 @@
 					expose_publicly,
 					optional_public_port: expose_publicly ? optional_public_port : null,
 					enable_backup,
+					node_id: node_id || undefined,
 					initial_databases
 				})
 			});
@@ -177,6 +194,30 @@
 					</Select.Content>
 				</Select.Root>
 			</div>
+			{#if nodes.length > 0}
+				<div class="space-y-2">
+					<Label>Docker node</Label>
+					<Select.Root type="single" bind:value={node_id}>
+						<Select.Trigger class="w-full">{selectedNodeLabel}</Select.Trigger>
+						<Select.Content>
+							{#each nodes as node}
+								<Select.Item value={node.id} label={node.name}>
+									{node.name}
+									{#if node.is_default}
+										<span class="text-muted-foreground"> (default)</span>
+									{/if}
+									{#if node.kind === 'local'}
+										<span class="text-muted-foreground"> · local</span>
+									{/if}
+								</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+					<p class="text-xs text-muted-foreground">
+						Clusters are provisioned on the selected Docker host.
+					</p>
+				</div>
+			{/if}
 		</Card.Content>
 	</Card.Root>
 

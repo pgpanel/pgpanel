@@ -14,7 +14,11 @@
 		CheckmarkCircle02Icon,
 		Alert02Icon,
 		Activity01Icon,
-		PlusSignIcon
+		PlusSignIcon,
+		CloudServerIcon,
+		DatabaseSyncIcon,
+		CloudUploadIcon,
+		Notification01Icon
 	} from '@hugeicons/core-free-icons';
 
 	let stats = $state<DashboardStats | null>(null);
@@ -75,6 +79,30 @@
 						value: stats.failed_operations,
 						icon: Alert02Icon,
 						tone: 'text-rose-400'
+					},
+					{
+						label: 'Nodes',
+						value: stats.node_count,
+						icon: CloudServerIcon,
+						tone: 'text-cyan-400'
+					},
+					{
+						label: 'Open alerts',
+						value: stats.open_alerts,
+						icon: Notification01Icon,
+						tone: 'text-amber-400'
+					},
+					{
+						label: 'Replicas',
+						value: stats.replica_count,
+						icon: DatabaseSyncIcon,
+						tone: 'text-indigo-400'
+					},
+					{
+						label: 'Destinations',
+						value: stats.backup_destinations,
+						icon: CloudUploadIcon,
+						tone: 'text-teal-400'
 					}
 				]
 			: []
@@ -100,7 +128,7 @@
 
 {#if loading}
 	<div class="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-		{#each Array(6) as _}
+		{#each Array(10) as _}
 			<Skeleton class="h-28 rounded-xl" />
 		{/each}
 	</div>

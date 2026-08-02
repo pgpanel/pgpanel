@@ -1,12 +1,14 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api';
+	import { api, type Node } from '$lib/api';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
+	import * as Alert from '$lib/components/ui/alert/index.js';
 	import { toast } from 'svelte-sonner';
 	import { trackOperation } from '$lib/jobs';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
@@ -14,14 +16,17 @@
 		DatabaseIcon,
 		Shield01Icon,
 		CloudUploadIcon,
-		CheckmarkCircle02Icon
+		CheckmarkCircle02Icon,
+		InformationCircleIcon
 	} from '@hugeicons/core-free-icons';
 
 	let step = $state(0);
 	let saving = $state(false);
+	let completing = $state(false);
 
-	// Step: welcome
 	// Step: first cluster
+	let nodes = $state<Node[]>([]);
+	let node_id = $state('');
 	let name = $state('primary');
 	let postgres_version = $state('17');
 	let enable_backup = $state(true);
@@ -30,6 +35,7 @@
 	let cpu_limit = $state(2);
 	let memory_mb = $state(2048);
 	let storage_limit_gb = $state(20);
+
 	// Step: backup storage
 	let storage_type = $state('local');
 	let storage_endpoint = $state('');
@@ -42,6 +48,20 @@
 	let storage_tls_verify = $state(true);
 
 	const steps = ['Welcome', 'First cluster', 'Backups', 'Done'];
+	const versionLabel = $derived(`PostgreSQL ${postgres_version}`);
+	const selectedNodeLabel = $derived(
+		nodes.find((n) => n.id === node_id)?.name ?? 'Select node'
+	);
+
+	onMount(async () => {
+		try {
+			nodes = await api<Node[]>('/api/nodes');
+			const defaultNode = nodes.find((n) => n.is_default) ?? nodes[0];
+			if (defaultNode) node_id = defaultNode.id;
+		} catch {
+			/* optional — cluster can still be created on local node */
+		}
+	});
 
 	async function exitWizard() {
 		try {
@@ -55,44 +75,70 @@
 		}
 	}
 
+	async function saveBackupStorage() {
+		if (storage_type === 'local') return;
+
+		if (!storage_bucket || !storage_access_key || !storage_secret_key) {
+			throw new Error('Bucket, access key and secret key are required for object storage');
+		}
+
+		await api('/api/backup-destinations', {
+			method: 'POST',
+			body: JSON.stringify({
+				name: 'Primary storage',
+				storage_type,
+				endpoint: storage_endpoint,
+				region: storage_region,
+				bucket: storage_bucket,
+				prefix: storage_prefix,
+				path_style: storage_path_style,
+				tls_verify: storage_tls_verify,
+				encrypt_backups: true,
+				compression_level: 6,
+				access_key: storage_access_key,
+				secret_key: storage_secret_key,
+				notes: null,
+				set_default: true,
+				enabled: true
+			})
+		});
+
+		await api('/api/settings/storage', {
+			method: 'POST',
+			body: JSON.stringify({
+				storage_type,
+				endpoint: storage_endpoint,
+				region: storage_region,
+				bucket: storage_bucket,
+				prefix: storage_prefix,
+				access_key: storage_access_key,
+				secret_key: storage_secret_key,
+				path_style: storage_path_style,
+				tls_verify: storage_tls_verify,
+				encrypt: true,
+				retention_days: 14,
+				keep_count: 30,
+				schedule_hour: 3
+			})
+		});
+	}
+
 	async function completeWizard() {
+		completing = true;
 		try {
-			if (storage_type !== 'local') {
-				if (!storage_bucket || !storage_access_key || !storage_secret_key) {
-					toast.error('Bucket, access key and secret key are required for object storage');
-					step = 2;
-					return;
-				}
-				await api('/api/settings/storage', {
-					method: 'POST',
-					body: JSON.stringify({
-						storage_type,
-						endpoint: storage_endpoint,
-						region: storage_region,
-						bucket: storage_bucket,
-						prefix: storage_prefix,
-						access_key: storage_access_key,
-						secret_key: storage_secret_key,
-						path_style: storage_path_style,
-						tls_verify: storage_tls_verify,
-						encrypt: true,
-						retention_days: 14,
-						keep_count: 30,
-						schedule_hour: 3
-					})
-				});
-			}
+			await saveBackupStorage();
 			await api('/api/settings/wizard', {
 				method: 'POST',
 				body: JSON.stringify({ completed: true })
 			});
 			sessionStorage.setItem('pgpanel_wizard_done', '1');
+			goto('/dashboard');
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Could not save wizard settings');
-			return;
+			if (storage_type !== 'local') step = 2;
+		} finally {
+			completing = false;
 		}
-		sessionStorage.setItem('pgpanel_wizard_done', '1');
-		goto('/dashboard');
 	}
 
 	async function createFirstCluster() {
@@ -112,10 +158,9 @@
 					storage_limit_gb,
 					expose_publicly: false,
 					enable_backup,
+					node_id: node_id || undefined,
 					initial_databases:
-						db_name && role_name
-							? [{ database_name: db_name, role_name }]
-							: []
+						db_name && role_name ? [{ database_name: db_name, role_name }] : []
 				})
 			});
 			toast.message('Admin password (copy now)', {
@@ -147,7 +192,7 @@
 	</div>
 
 	<div class="flex justify-center gap-2">
-		{#each steps as s, i}
+		{#each steps as s, i (s)}
 			<div
 				class="flex items-center gap-2 rounded-full px-3 py-1 text-xs {i === step
 					? 'bg-primary text-primary-foreground'
@@ -171,15 +216,17 @@
 					Welcome
 				</Card.Title>
 				<Card.Description>
-					PgPanel manages isolated PostgreSQL clusters on this host. Backups are built-in (no
-					Databasus). Clusters stay on private Docker networks by default.
+					PgPanel manages isolated PostgreSQL clusters across Docker hosts. Native logical backups,
+					private networks by default, and production controls built in.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm text-muted-foreground">
-				<p>• Create clusters, databases, and application roles</p>
-				<p>• Native logical backups (pg_dump) + optional object storage</p>
-				<p>• Live operation progress in the UI</p>
-				<p>• Resource monitoring per cluster</p>
+				<p>• Multi-node Docker hosts — provision clusters on local or remote nodes</p>
+				<p>• Named backup destinations — S3-compatible or local storage with encryption</p>
+				<p>• Streaming replicas — add read replicas from the Replicas page</p>
+				<p>• WAF policies — rate limits, IP rules, and security headers at the edge</p>
+				<p>• Monitoring &amp; alerts — cluster metrics and alert rules</p>
+				<p>• Multi-admin RBAC — separate operator accounts with role-based access</p>
 			</Card.Content>
 			<Card.Footer class="justify-end">
 				<Button onclick={() => (step = 1)}>Continue</Button>
@@ -197,6 +244,30 @@
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="space-y-4">
+				{#if nodes.length > 0}
+					<div class="space-y-2">
+						<Label>Docker node</Label>
+						<Select.Root type="single" bind:value={node_id}>
+							<Select.Trigger class="w-full">{selectedNodeLabel}</Select.Trigger>
+							<Select.Content>
+								{#each nodes as node (node.id)}
+									<Select.Item value={node.id} label={node.name}>
+										{node.name}
+										{#if node.is_default}
+											<span class="text-muted-foreground"> (default)</span>
+										{/if}
+										{#if node.kind === 'local'}
+											<span class="text-muted-foreground"> · local</span>
+										{/if}
+									</Select.Item>
+								{/each}
+							</Select.Content>
+						</Select.Root>
+						<p class="text-xs text-muted-foreground">
+							Clusters are provisioned on the selected Docker host.
+						</p>
+					</div>
+				{/if}
 				<div class="space-y-2">
 					<Label>Cluster name</Label>
 					<Input bind:value={name} required />
@@ -204,11 +275,11 @@
 				<div class="space-y-2">
 					<Label>PostgreSQL version</Label>
 					<Select.Root type="single" bind:value={postgres_version}>
-						<Select.Trigger class="w-full">PostgreSQL {postgres_version}</Select.Trigger>
+						<Select.Trigger class="w-full">{versionLabel}</Select.Trigger>
 						<Select.Content>
-							<Select.Item value="16" label="16">16</Select.Item>
-							<Select.Item value="17" label="17">17</Select.Item>
-							<Select.Item value="18" label="18">18</Select.Item>
+							<Select.Item value="16" label="PostgreSQL 16">PostgreSQL 16</Select.Item>
+							<Select.Item value="17" label="PostgreSQL 17">PostgreSQL 17</Select.Item>
+							<Select.Item value="18" label="PostgreSQL 18">PostgreSQL 18</Select.Item>
 						</Select.Content>
 					</Select.Root>
 				</div>
@@ -239,7 +310,9 @@
 				<div class="flex items-center justify-between">
 					<div>
 						<Label>Enable backups</Label>
-						<p class="text-xs text-muted-foreground">Native pg_dump schedule (daily 03:00 UTC)</p>
+						<p class="text-xs text-muted-foreground">
+							Creates a daily pg_dump schedule (03:00 UTC). Destinations can be refined later.
+						</p>
 					</div>
 					<Switch bind:checked={enable_backup} />
 				</div>
@@ -262,8 +335,8 @@
 					Backup storage
 				</Card.Title>
 				<Card.Description>
-					Choose where backups live. Credentials are encrypted in the panel database and never written
-					to <code class="text-xs">.env</code>.
+					Choose where backups live. Credentials are encrypted in the panel database and never
+					written to <code class="text-xs">.env</code>.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
@@ -303,10 +376,22 @@
 						</div>
 						<div class="space-y-2">
 							<Label>Secret key</Label>
-							<Input type="password" bind:value={storage_secret_key} autocomplete="new-password" required />
+							<Input
+								type="password"
+								bind:value={storage_secret_key}
+								autocomplete="new-password"
+								required
+							/>
 						</div>
 					</div>
 				{/if}
+				<Alert.Root class="border-border/60 bg-muted/30">
+					<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
+					<Alert.Description class="text-xs text-muted-foreground">
+						Any cluster can target any destination later under
+						<strong>Destinations</strong> or per-cluster <strong>Backup targets</strong>.
+					</Alert.Description>
+				</Alert.Root>
 			</Card.Content>
 			<Card.Footer class="justify-between">
 				<Button variant="outline" onclick={() => (step = 1)}>Back</Button>
@@ -321,11 +406,20 @@
 					You're ready
 				</Card.Title>
 				<Card.Description>
-					Open the dashboard to manage clusters, run backups, and monitor resources.
+					Your panel is configured. Here's where to go next:
 				</Card.Description>
 			</Card.Header>
+			<Card.Content class="space-y-2 text-sm text-muted-foreground">
+				<p>• <strong>Dashboard</strong> — cluster overview and live operations</p>
+				<p>• <strong>Destinations</strong> — named backup storage and defaults</p>
+				<p>• <strong>Nodes</strong> — add remote Docker hosts for multi-node deployments</p>
+				<p>• <strong>Monitoring</strong> — metrics, alerts, and health checks</p>
+				<p>• <strong>Users</strong> — invite additional admins with RBAC roles</p>
+			</Card.Content>
 			<Card.Footer class="justify-end">
-				<Button onclick={completeWizard}>Go to dashboard</Button>
+				<Button disabled={completing} onclick={completeWizard}>
+					{completing ? 'Saving…' : 'Go to dashboard'}
+				</Button>
 			</Card.Footer>
 		</Card.Root>
 	{/if}

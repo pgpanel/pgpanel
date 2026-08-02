@@ -10,7 +10,14 @@
 		Shield01Icon,
 		Settings01Icon,
 		Logout03Icon,
-		ServerStack01Icon
+		ServerStack01Icon,
+		CloudServerIcon,
+		SecurityLockIcon,
+		UserGroupIcon,
+		CloudUploadIcon,
+		DatabaseSyncIcon,
+		Chart01Icon,
+		Notification01Icon
 	} from '@hugeicons/core-free-icons';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -21,7 +28,14 @@
 		{ href: '/dashboard', label: 'Dashboard', icon: DashboardSquare01Icon },
 		{ href: '/clusters', label: 'Clusters', icon: DatabaseIcon },
 		{ href: '/clusters/new', label: 'New cluster', icon: PlusSignIcon },
+		{ href: '/nodes', label: 'Nodes', icon: CloudServerIcon },
+		{ href: '/replicas', label: 'Replicas', icon: DatabaseSyncIcon },
+		{ href: '/destinations', label: 'Destinations', icon: CloudUploadIcon },
+		{ href: '/monitoring', label: 'Monitoring', icon: Chart01Icon },
+		{ href: '/alerts', label: 'Alerts', icon: Notification01Icon },
+		{ href: '/waf', label: 'WAF', icon: SecurityLockIcon },
 		{ href: '/operations', label: 'Operations', icon: Activity01Icon },
+		{ href: '/users', label: 'Users', icon: UserGroupIcon },
 		{ href: '/audit', label: 'Audit log', icon: Shield01Icon },
 		{ href: '/settings', label: 'Settings', icon: Settings01Icon }
 	] as const;
@@ -89,7 +103,7 @@
 			</div>
 			<div class="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
 				<p class="truncate text-sm font-medium">{$user?.username}</p>
-				<p class="truncate text-xs text-muted-foreground">Administrator</p>
+				<p class="truncate text-xs text-muted-foreground capitalize">{$user?.role ?? '—'}</p>
 			</div>
 		</div>
 		<Button

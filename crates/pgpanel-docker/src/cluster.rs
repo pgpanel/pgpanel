@@ -37,6 +37,14 @@ impl ClusterProvisioner {
         Self { docker, config }
     }
 
+    /// Clone provisioner bound to a different Docker host (multi-node).
+    pub fn with_docker(&self, docker: DockerClient) -> Self {
+        Self {
+            docker,
+            config: self.config.clone(),
+        }
+    }
+
     pub fn docker(&self) -> &DockerClient {
         &self.docker
     }

@@ -103,14 +103,23 @@ impl BackupEngine {
         let storage = self.storage.read().await.clone();
         let storage_key = storage.put(&key, &payload).await?;
 
-        let local = self
-            .data_dir
-            .join("logical")
-            .join(format!("{backup_id}.dump.gz"));
-        if let Some(parent) = local.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let _ = tokio::fs::write(&local, &payload).await;
+        let keep_local = std::env::var("BACKUP_KEEP_LOCAL")
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+
+        let local_path = if keep_local || storage.kind() == "local" {
+            let local = self
+                .data_dir
+                .join("logical")
+                .join(format!("{backup_id}.dump.gz"));
+            if let Some(parent) = local.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = tokio::fs::write(&local, &payload).await;
+            Some(local.display().to_string())
+        } else {
+            None
+        };
 
         if let Ok(url) = std::env::var("WEBHOOK_URL") {
             if !url.is_empty() {
@@ -131,7 +140,65 @@ impl BackupEngine {
             storage_key,
             size_bytes,
             checksum_sha256: checksum,
-            local_path: Some(local.display().to_string()),
+            local_path,
+        })
+    }
+
+    pub async fn delete_object(&self, storage_key: &str) -> Result<()> {
+        let storage = self.storage.read().await.clone();
+        storage.delete(storage_key).await
+    }
+
+    /// Persist an already-produced pg_dump custom blob (e.g. with exclude filters).
+    pub async fn store_raw_logical(
+        &self,
+        cluster_id: Uuid,
+        database: &str,
+        schema_only: bool,
+        encrypt: bool,
+        raw: &[u8],
+    ) -> Result<LogicalBackupResult> {
+        let backup_id = Uuid::new_v4();
+        let started = Utc::now();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        use std::io::Write;
+        encoder
+            .write_all(raw)
+            .map_err(|e| Error::Internal(format!("gzip: {e}")))?;
+        let compressed = encoder
+            .finish()
+            .map_err(|e| Error::Internal(format!("gzip finish: {e}")))?;
+
+        let payload = if encrypt {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
+            let enc = encrypt_secret(&self.config.master_encryption_key, &SecretString::from(b64))?;
+            format!("enc:v1:{enc}").into_bytes()
+        } else {
+            compressed
+        };
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let checksum = hex::encode(hasher.finalize());
+        let size_bytes = payload.len() as u64;
+        let kind = if schema_only { "schema" } else { "full" };
+        let key = format!(
+            "logical/{}/{}_{}_{}.dump.gz{}",
+            cluster_id,
+            database,
+            kind,
+            started.format("%Y%m%dT%H%M%SZ"),
+            if encrypt { ".enc" } else { "" }
+        );
+        let storage = self.storage.read().await.clone();
+        let storage_key = storage.put(&key, &payload).await?;
+        Ok(LogicalBackupResult {
+            backup_id,
+            storage_key,
+            size_bytes,
+            checksum_sha256: checksum,
+            local_path: None,
         })
     }
 

@@ -1,7 +1,7 @@
 //! Native backup engine for PgPanel (replaces Databasus).
 #![forbid(unsafe_code)]
 
-mod dump;
+pub mod dump;
 mod engine;
 mod notify;
 mod storage;
@@ -9,6 +9,7 @@ mod types;
 mod wal;
 
 pub use engine::BackupEngine;
+pub use notify::notify_webhook;
 pub use storage::{LocalStorage, S3Storage, S3StorageConfig, StorageBackend};
 pub use types::*;
 pub use wal::{archive_settings_sql, WalConfig, WalStatus};

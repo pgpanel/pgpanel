@@ -13,7 +13,7 @@ use pgpanel_core::models::{
     ClusterStatus, CreateClusterRequest, CreateDatabaseRequest, DatabasusIntegrationStatus,
     DeleteMode, HealthStatus, JobType, Operation,
 };
-use pgpanel_docker::ClusterProvisioner;
+use pgpanel_docker::{ClusterProvisioner, NodeRegistry};
 use pgpanel_postgres::{PgClient, RoleService};
 
 use crate::queue::JobQueue;
@@ -24,6 +24,7 @@ pub struct JobContext {
     pub config: Config,
     pub provisioner: ClusterProvisioner,
     pub backup: Arc<BackupEngine>,
+    pub nodes: NodeRegistry,
 }
 
 impl JobContext {
@@ -39,11 +40,58 @@ impl JobContext {
             }
             JobType::RunBackup => self.handle_run_backup(&op).await,
             JobType::VerifyBackup => self.handle_verify_backup(&op).await,
+            JobType::RestoreBackup => self.handle_restore_backup(&op).await,
+            JobType::PruneBackups => self.handle_prune_backups(&op).await,
             JobType::CreateDatabase => self.handle_create_database(&op).await,
             JobType::DeleteDatabase => self.handle_delete_database(&op).await,
             JobType::RotatePassword => self.handle_rotate_password(&op).await,
             JobType::RefreshMetrics => self.handle_refresh_metrics(&op).await,
+            JobType::PingNode => self.handle_ping_node(&op).await,
+            JobType::SyncReplica => self.handle_sync_replica(&op).await,
+            JobType::PromoteReplica => self.handle_promote_replica(&op).await,
+            JobType::DuplicateCluster => self.handle_duplicate_cluster(&op).await,
+            JobType::EvaluateAlerts => self.handle_evaluate_alerts(&op).await,
         }
+    }
+
+    /// Provisioner bound to the Docker host of the cluster's node.
+    async fn provisioner_for_cluster(&self, cluster_id: Uuid) -> Result<ClusterProvisioner> {
+        let node_id: Option<String> =
+            sqlx::query_scalar("SELECT node_id FROM clusters WHERE id = ?")
+                .bind(cluster_id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?
+                .flatten();
+        let Some(nid) = node_id else {
+            return Ok(self.provisioner.clone());
+        };
+        let row = sqlx::query_as::<_, (String, Option<String>, i64)>(
+            "SELECT kind, docker_host, docker_host_encrypted FROM nodes WHERE id = ?",
+        )
+        .bind(&nid)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+        let Some((kind, host, enc)) = row else {
+            return Ok(self.provisioner.clone());
+        };
+        if kind == "local" {
+            return Ok(self.provisioner.clone());
+        }
+        let host = if enc != 0 {
+            let enc = host.ok_or_else(|| Error::Internal("missing docker_host".into()))?;
+            let plain = decrypt_secret(&self.config.master_encryption_key, &enc)?;
+            plain.expose_secret().to_string()
+        } else {
+            host.unwrap_or_default()
+        };
+        let node_uuid = Uuid::parse_str(&nid).unwrap_or_else(|_| NodeRegistry::local_node_id());
+        let docker = self
+            .nodes
+            .client_for_host(node_uuid, Some(&host))
+            .await?;
+        Ok(self.provisioner.with_docker(docker))
     }
 
     async fn handle_create_cluster(&self, op: &Operation) -> Result<serde_json::Value> {
@@ -74,7 +122,8 @@ impl JobContext {
             .await?;
 
         let (names, resources) = match self
-            .provisioner
+            .provisioner_for_cluster(cluster_id)
+            .await?
             .provision(cluster_id, &slug, &req, password.expose_secret())
             .await
         {
@@ -303,17 +352,19 @@ impl JobContext {
                 .await
                 .map_err(|e| Error::NotFound(format!("cluster: {e}")))?;
 
+        let provisioner = self.provisioner_for_cluster(cluster_id).await?;
+
         match action {
             "start" => {
                 self.set_cluster_status(cluster_id, ClusterStatus::Starting, None)
                     .await?;
-                self.provisioner.start(&container).await?;
+                provisioner.start(&container).await?;
                 self.set_cluster_status(cluster_id, ClusterStatus::Healthy, None)
                     .await?;
                 self.set_health(cluster_id, HealthStatus::Healthy).await?;
             }
             "stop" => {
-                self.provisioner.stop(&container).await?;
+                provisioner.stop(&container).await?;
                 self.set_cluster_status(cluster_id, ClusterStatus::Stopped, None)
                     .await?;
                 self.set_health(cluster_id, HealthStatus::Unknown).await?;
@@ -321,7 +372,7 @@ impl JobContext {
             "restart" => {
                 self.set_cluster_status(cluster_id, ClusterStatus::Updating, None)
                     .await?;
-                self.provisioner.restart(&container).await?;
+                provisioner.restart(&container).await?;
                 self.set_cluster_status(cluster_id, ClusterStatus::Healthy, None)
                     .await?;
                 self.set_health(cluster_id, HealthStatus::Healthy).await?;
@@ -360,6 +411,8 @@ impl JobContext {
         self.set_cluster_status(cluster_id, ClusterStatus::Deleting, None)
             .await?;
 
+        let provisioner = self.provisioner_for_cluster(cluster_id).await?;
+
         match mode {
             DeleteMode::RemoveFromPanel => {
                 self.queue
@@ -367,7 +420,7 @@ impl JobContext {
                     .await?;
             }
             DeleteMode::DeleteContainerKeepVolume => {
-                self.provisioner
+                provisioner
                     .deprovision(&container, &network, &volume, false)
                     .await?;
             }
@@ -382,7 +435,7 @@ impl JobContext {
                         "confirm_volume_delete required for permanent delete".into(),
                     ));
                 }
-                self.provisioner
+                provisioner
                     .deprovision(&container, &network, &volume, true)
                     .await?;
             }
@@ -438,22 +491,58 @@ impl JobContext {
         let now = Utc::now().to_rfc3339();
         let schedule_id = Uuid::new_v4();
         let (retention_days, keep_count, _, schedule_hour) = self.backup_policy().await;
+        let cron_default: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'backup.cron_default'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| format!("0 {schedule_hour} * * *"));
+        let compression: i64 = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'backup.compression_level'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v: String| v.parse().ok())
+        .unwrap_or(6);
+        let verify_after = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'backup.verify_after'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+
         sqlx::query(
             r#"
-            INSERT INTO backup_schedules (id, cluster_id, cron, kind, database_name, enabled, retention_days, keep_count, created_at, updated_at)
-            VALUES (?, ?, ?, 'logical_full', 'postgres', 1, ?, ?, ?, ?)
+            INSERT INTO backup_schedules (
+                id, cluster_id, cron, kind, database_name, enabled, retention_days, keep_count,
+                compression_level, dump_format, schema_only, verify_after, notify_on_failure,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'logical_full', 'postgres', 1, ?, ?, ?, 'custom', 0, ?, 1, ?, ?)
             ON CONFLICT(cluster_id, database_name, kind) DO UPDATE SET
                 enabled = 1,
+                cron = excluded.cron,
                 retention_days = excluded.retention_days,
                 keep_count = excluded.keep_count,
+                compression_level = excluded.compression_level,
+                verify_after = excluded.verify_after,
                 updated_at = excluded.updated_at
             "#,
         )
         .bind(schedule_id.to_string())
         .bind(cluster_id.to_string())
-        .bind(format!("0 {schedule_hour} * * *"))
+        .bind(&cron_default)
         .bind(retention_days)
         .bind(keep_count)
+        .bind(compression)
+        .bind(if verify_after { 1 } else { 0 })
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -514,6 +603,24 @@ impl JobContext {
             .get("schema_only")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let exclude_schemas: Vec<&str> = op
+            .payload
+            .get("exclude_schemas")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let exclude_tables: Vec<&str> = op
+            .payload
+            .get("exclude_tables")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
         let (_, _, encrypt, _) = self.backup_policy().await;
 
         let (username, password) = match self
@@ -551,18 +658,37 @@ impl JobContext {
         .await
         .map_err(|e| Error::Job(e.to_string()))?;
 
-        let result = self
-            .backup
-            .run_logical_backup(RunLogicalBackupRequest {
-                cluster_id,
-                container_name: container,
-                database: database.clone(),
-                username,
-                password: password.expose_secret().to_string(),
+        // Prefer extended dump when filters are present
+        let result = if exclude_schemas.is_empty() && exclude_tables.is_empty() {
+            self.backup
+                .run_logical_backup(RunLogicalBackupRequest {
+                    cluster_id,
+                    container_name: container,
+                    database: database.clone(),
+                    username,
+                    password: password.expose_secret().to_string(),
+                    schema_only,
+                    encrypt,
+                })
+                .await
+        } else {
+            use pgpanel_backup::dump::pg_dump_custom_ex;
+            // Stage via engine by dumping then putting — use extended dump then wrap
+            let raw = pg_dump_custom_ex(
+                &container,
+                &database,
+                &username,
+                password.expose_secret(),
                 schema_only,
-                encrypt,
-            })
-            .await;
+                &exclude_schemas,
+                &exclude_tables,
+                &[],
+            )
+            .await?;
+            self.backup
+                .store_raw_logical(cluster_id, &database, schema_only, encrypt, &raw)
+                .await
+        };
 
         let finished = Utc::now().to_rfc3339();
         match result {
@@ -621,6 +747,591 @@ impl JobContext {
                 Err(Error::Backup(e.to_string()))
             }
         }
+    }
+
+    async fn handle_restore_backup(&self, op: &Operation) -> Result<serde_json::Value> {
+        let cluster_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing cluster_id".into()))?;
+        let backup_id = op
+            .payload
+            .get("backup_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Job("backup_id required".into()))?;
+        let target_db = op
+            .payload
+            .get("target_database")
+            .and_then(|v| v.as_str())
+            .unwrap_or("postgres");
+        let clean = op
+            .payload
+            .get("clean")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let container: String =
+            sqlx::query_scalar("SELECT docker_container_name FROM clusters WHERE id = ?")
+                .bind(cluster_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+
+        let row = sqlx::query_as::<_, (Option<String>, i64)>(
+            "SELECT storage_key, encrypted FROM backups WHERE id = ? AND cluster_id = ?",
+        )
+        .bind(backup_id)
+        .bind(cluster_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("backup".into()))?;
+
+        let storage_key = row
+            .0
+            .ok_or_else(|| Error::NotFound("backup has no storage_key".into()))?;
+        let encrypted = row.1 != 0;
+
+        let (username, password) = match self
+            .load_credential_password(cluster_id, "postgres")
+            .await
+        {
+            Ok(pw) => ("postgres".to_string(), pw),
+            Err(_) => (
+                "postgres".to_string(),
+                self.load_admin_password(cluster_id).await?,
+            ),
+        };
+
+        self.queue
+            .set_progress(op.id, 30, "restoring logical dump")
+            .await?;
+
+        self.backup
+            .restore_logical(
+                &container,
+                target_db,
+                &username,
+                password.expose_secret(),
+                &storage_key,
+                encrypted,
+                clean,
+            )
+            .await?;
+
+        self.queue
+            .set_progress(op.id, 100, "restore complete")
+            .await?;
+        Ok(serde_json::json!({
+            "backup_id": backup_id,
+            "target_database": target_db,
+            "clean": clean,
+            "ok": true,
+        }))
+    }
+
+    async fn handle_prune_backups(&self, op: &Operation) -> Result<serde_json::Value> {
+        let (retention, keep_count, _, _) = self.backup_policy().await;
+        let cluster_filter = op.cluster_id.map(|id| id.to_string());
+
+        let rows: Vec<(String, Option<String>, String)> = if let Some(cid) = &cluster_filter {
+            sqlx::query_as(
+                r#"
+                SELECT id, storage_key, created_at FROM backups
+                WHERE cluster_id = ? AND status IN ('succeeded', 'verified')
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(cid)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Job(e.to_string()))?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT id, storage_key, created_at FROM backups
+                WHERE status IN ('succeeded', 'verified')
+                ORDER BY created_at DESC
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Job(e.to_string()))?
+        };
+
+        // Group by cluster via querying per-id is heavy; prune globally with keep_count + retention
+        let cutoff = Utc::now() - chrono::Duration::days(retention);
+        let mut deleted = 0u32;
+        // Keep newest `keep_count` overall when no cluster filter — per cluster when filtered
+        let keep = keep_count.max(1) as usize;
+        for (idx, (id, key, created)) in rows.iter().enumerate() {
+            let too_old = chrono::DateTime::parse_from_rfc3339(created)
+                .map(|d| d.with_timezone(&Utc) < cutoff)
+                .unwrap_or(false);
+            let over_count = idx >= keep;
+            if !(too_old || over_count) {
+                continue;
+            }
+            // Always keep at least the newest one
+            if idx == 0 {
+                continue;
+            }
+            if let Some(k) = key {
+                let _ = self.backup.delete_object(k).await;
+            }
+            let _ = sqlx::query("DELETE FROM backups WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await;
+            deleted += 1;
+        }
+
+        Ok(serde_json::json!({ "deleted": deleted, "retention_days": retention, "keep_count": keep_count }))
+    }
+
+    async fn handle_ping_node(&self, op: &Operation) -> Result<serde_json::Value> {
+        let node_id = op
+            .payload
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(NodeRegistry::local_node_id);
+        let row = sqlx::query_as::<_, (String, Option<String>, i64)>(
+            "SELECT kind, docker_host, docker_host_encrypted FROM nodes WHERE id = ?",
+        )
+        .bind(node_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("node".into()))?;
+
+        let host = if row.0 == "local" {
+            None
+        } else if row.2 != 0 {
+            let enc = row.1.ok_or_else(|| Error::Internal("missing docker_host".into()))?;
+            let plain = decrypt_secret(&self.config.master_encryption_key, &enc)?;
+            Some(plain.expose_secret().to_string())
+        } else {
+            row.1
+        };
+
+        self.nodes.ping_host(host.as_deref()).await?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE nodes SET status = 'online', last_seen_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(node_id.to_string())
+        .execute(&self.pool)
+        .await
+        .ok();
+        Ok(serde_json::json!({"ok": true, "node_id": node_id}))
+    }
+
+    async fn handle_duplicate_cluster(&self, op: &Operation) -> Result<serde_json::Value> {
+        let primary_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing primary cluster_id".into()))?;
+        let replica_row_id = op
+            .payload
+            .get("replica_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Job("replica_id required".into()))?;
+        let target_node = op
+            .payload
+            .get("target_node_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Job("target_node_id required".into()))?;
+        let name = op
+            .payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("replica")
+            .to_string();
+
+        let primary = sqlx::query_as::<_, (String, String, f64, i64, i64)>(
+            "SELECT name, postgres_version, cpu_limit, memory_mb, storage_limit_gb FROM clusters WHERE id = ?",
+        )
+        .bind(primary_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        let slug_base = format!(
+            "{}_r_{}",
+            pgpanel_core::validation::slugify(&primary.0),
+            &Uuid::new_v4().to_string()[..8]
+        );
+        let now = Utc::now().to_rfc3339();
+        let new_id = Uuid::new_v4();
+        let names = self.provisioner.resource_names(&slug_base);
+        let admin_password = generate_password();
+        let enc = encrypt_secret(&self.config.master_encryption_key, &admin_password)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO clusters (
+                id, name, slug, postgres_version, docker_container_id, docker_container_name,
+                docker_volume_name, docker_network_name, internal_hostname, public_port,
+                cpu_limit, memory_mb, storage_limit_gb, status, health, databasus_status,
+                delete_protection, enable_backup, node_id, environment, description, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, 'creating', 'unknown',
+                      'not_configured', 0, 0, ?, 'replica', ?, ?, ?)
+            "#,
+        )
+        .bind(new_id.to_string())
+        .bind(format!("{} (replica)", name))
+        .bind(&slug_base)
+        .bind(&primary.1)
+        .bind(&names.container_name)
+        .bind(&names.volume_name)
+        .bind(&names.network_name)
+        .bind(&names.internal_hostname)
+        .bind(primary.2)
+        .bind(primary.3)
+        .bind(primary.4)
+        .bind(target_node)
+        .bind(format!("Replica of {primary_id}"))
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO cluster_credentials (id, cluster_id, role_name, username, password_encrypted, kind, created_at, updated_at)
+            VALUES (?, ?, 'postgres', 'postgres', ?, 'admin', ?, ?)
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(new_id.to_string())
+        .bind(&enc)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        let req = CreateClusterRequest {
+            name: format!("{} (replica)", name),
+            postgres_version: primary.1.clone(),
+            cpu_limit: primary.2,
+            memory_mb: primary.3 as u32,
+            storage_limit_gb: primary.4 as u32,
+            expose_publicly: false,
+            optional_public_port: None,
+            enable_backup: false,
+            node_id: Uuid::parse_str(target_node).ok(),
+            initial_databases: vec![],
+        };
+
+        sqlx::query(
+            "UPDATE cluster_replicas SET status = 'syncing', replica_cluster_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(new_id.to_string())
+        .bind(&now)
+        .bind(replica_row_id)
+        .execute(&self.pool)
+        .await
+        .ok();
+
+        let provisioner = self.provisioner_for_cluster(new_id).await?;
+        match provisioner
+            .provision(new_id, &slug_base, &req, admin_password.expose_secret())
+            .await
+        {
+            Ok(_) => {
+                self.set_cluster_status(new_id, ClusterStatus::Healthy, None)
+                    .await?;
+                // Initial data sync from primary backup dump
+                let _ = self
+                    .queue
+                    .enqueue(
+                        JobType::SyncReplica,
+                        Some(primary_id),
+                        serde_json::json!({"replica_id": replica_row_id}),
+                        None,
+                    )
+                    .await;
+                sqlx::query(
+                    "UPDATE cluster_replicas SET status = 'healthy', updated_at = ? WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(replica_row_id)
+                .execute(&self.pool)
+                .await
+                .ok();
+                Ok(serde_json::json!({
+                    "replica_cluster_id": new_id,
+                    "status": "healthy",
+                }))
+            }
+            Err(e) => {
+                sqlx::query(
+                    "UPDATE cluster_replicas SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(e.to_string())
+                .bind(&now)
+                .bind(replica_row_id)
+                .execute(&self.pool)
+                .await
+                .ok();
+                Err(e)
+            }
+        }
+    }
+
+    async fn handle_sync_replica(&self, op: &Operation) -> Result<serde_json::Value> {
+        let replica_id = op
+            .payload
+            .get("replica_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Job("replica_id required".into()))?;
+        let row = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT primary_cluster_id, replica_cluster_id FROM cluster_replicas WHERE id = ?",
+        )
+        .bind(replica_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("replica".into()))?;
+
+        let primary_id = Uuid::parse_str(&row.0).map_err(|e| Error::Job(e.to_string()))?;
+        let replica_cluster = row
+            .1
+            .ok_or_else(|| Error::Job("replica cluster not provisioned yet".into()))?;
+        let replica_uuid =
+            Uuid::parse_str(&replica_cluster).map_err(|e| Error::Job(e.to_string()))?;
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE cluster_replicas SET status = 'syncing', updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(replica_id)
+            .execute(&self.pool)
+            .await
+            .ok();
+
+        // Dump from primary
+        let primary_container: String =
+            sqlx::query_scalar("SELECT docker_container_name FROM clusters WHERE id = ?")
+                .bind(primary_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+        let replica_container: String =
+            sqlx::query_scalar("SELECT docker_container_name FROM clusters WHERE id = ?")
+                .bind(replica_uuid.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Job(e.to_string()))?;
+
+        let pw = self.load_admin_password(primary_id).await?;
+        let dump = pgpanel_backup::dump::pg_dump_custom(
+            &primary_container,
+            "postgres",
+            "postgres",
+            pw.expose_secret(),
+            false,
+        )
+        .await?;
+
+        let replica_pw = self.load_admin_password(replica_uuid).await?;
+        pgpanel_backup::dump::pg_restore_custom(
+            &replica_container,
+            "postgres",
+            "postgres",
+            replica_pw.expose_secret(),
+            &dump,
+            true,
+        )
+        .await?;
+
+        let finished = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE cluster_replicas SET status = 'healthy', last_sync_at = ?, lag_seconds = 0, last_error = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(&finished)
+        .bind(&finished)
+        .bind(replica_id)
+        .execute(&self.pool)
+        .await
+        .ok();
+
+        Ok(serde_json::json!({"ok": true, "synced_at": finished}))
+    }
+
+    async fn handle_promote_replica(&self, op: &Operation) -> Result<serde_json::Value> {
+        let replica_id = op
+            .payload
+            .get("replica_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Job("replica_id required".into()))?;
+        let row = sqlx::query_as::<_, (String, Option<String>, i64)>(
+            "SELECT primary_cluster_id, replica_cluster_id, promote_protection FROM cluster_replicas WHERE id = ?",
+        )
+        .bind(replica_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?
+        .ok_or_else(|| Error::NotFound("replica".into()))?;
+
+        if row.2 != 0
+            && !op
+                .payload
+                .get("confirm")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            return Err(Error::ConfirmationRequired(
+                "confirm=true required to promote replica".into(),
+            ));
+        }
+        let replica_cluster = row
+            .1
+            .ok_or_else(|| Error::Job("no replica cluster".into()))?;
+        let now = Utc::now().to_rfc3339();
+        // Mark former primary as standby metadata; replica becomes independent primary
+        sqlx::query(
+            "UPDATE clusters SET environment = 'production', description = 'Promoted from replica', updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&replica_cluster)
+        .execute(&self.pool)
+        .await
+        .ok();
+        sqlx::query(
+            "UPDATE clusters SET environment = 'former_primary', updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&row.0)
+        .execute(&self.pool)
+        .await
+        .ok();
+        sqlx::query(
+            "UPDATE cluster_replicas SET status = 'promoted', enabled = 0, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(replica_id)
+        .execute(&self.pool)
+        .await
+        .ok();
+        Ok(serde_json::json!({
+            "promoted_cluster_id": replica_cluster,
+            "former_primary_id": row.0,
+        }))
+    }
+
+    async fn handle_evaluate_alerts(&self, _op: &Operation) -> Result<serde_json::Value> {
+        let rules: Vec<(String, String, String, String, f64, String, Option<String>)> =
+            sqlx::query_as(
+                r#"
+                SELECT id, name, severity, metric, threshold, operator, scope_id
+                FROM alert_rules WHERE enabled = 1
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+        let mut fired = 0u32;
+        for (id, name, severity, metric, threshold, operator, _scope) in rules {
+            let value = match metric.as_str() {
+                "cpu_percent" => sqlx::query_scalar::<_, f64>(
+                    "SELECT COALESCE(AVG(cpu_percent), 0) FROM cluster_metrics WHERE collected_at > datetime('now', '-10 minutes')",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0.0),
+                "memory_percent" => sqlx::query_scalar::<_, f64>(
+                    "SELECT COALESCE(AVG(CASE WHEN memory_limit_mb > 0 THEN 100.0 * memory_usage_mb / memory_limit_mb ELSE 0 END), 0) FROM cluster_metrics WHERE collected_at > datetime('now', '-10 minutes')",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0.0),
+                "backup_age_hours" => {
+                    let last: Option<String> = sqlx::query_scalar(
+                        "SELECT MAX(last_successful_backup) FROM backup_integrations",
+                    )
+                    .fetch_optional(&self.pool)
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten();
+                    match last.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok()) {
+                        Some(dt) => {
+                            (Utc::now() - dt.with_timezone(&Utc)).num_seconds() as f64 / 3600.0
+                        }
+                        None => 9999.0,
+                    }
+                }
+                "replica_lag" => sqlx::query_scalar::<_, f64>(
+                    "SELECT COALESCE(MAX(lag_seconds), 0) FROM cluster_replicas WHERE enabled = 1 AND status != 'paused'",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0.0) as f64,
+                "failed_backups" => sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM backups WHERE status = 'failed' AND created_at > datetime('now', '-24 hours')",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0) as f64,
+                _ => continue,
+            };
+
+            let hit = match operator.as_str() {
+                "gte" => value >= threshold,
+                "lt" => value < threshold,
+                "lte" => value <= threshold,
+                "eq" => (value - threshold).abs() < f64::EPSILON,
+                _ => value > threshold,
+            };
+            if !hit {
+                continue;
+            }
+            // cooldown: skip if open alert for same rule in last hour
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM alerts WHERE rule_id = ? AND status = 'open' AND fired_at > datetime('now', '-1 hour')",
+            )
+            .bind(&id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+            if recent > 0 {
+                continue;
+            }
+            let alert_id = Uuid::new_v4();
+            let now = Utc::now().to_rfc3339();
+            sqlx::query(
+                r#"
+                INSERT INTO alerts (id, rule_id, severity, title, message, resource_type, status, fired_at, details)
+                VALUES (?, ?, ?, ?, ?, 'panel', 'open', ?, ?)
+                "#,
+            )
+            .bind(alert_id.to_string())
+            .bind(&id)
+            .bind(&severity)
+            .bind(&name)
+            .bind(format!("{name}: {metric}={value:.2} (threshold {threshold})"))
+            .bind(&now)
+            .bind(serde_json::json!({"metric": metric, "value": value}).to_string())
+            .execute(&self.pool)
+            .await
+            .ok();
+            fired += 1;
+            if let Ok(url) = std::env::var("WEBHOOK_URL") {
+                if !url.is_empty() {
+                    pgpanel_backup::notify_webhook(
+                        &url,
+                        &format!("PgPanel alert: {name}"),
+                        &format!("{metric}={value:.2}"),
+                    )
+                    .await;
+                }
+            }
+        }
+        Ok(serde_json::json!({"fired": fired}))
     }
 
     async fn handle_verify_backup(&self, op: &Operation) -> Result<serde_json::Value> {

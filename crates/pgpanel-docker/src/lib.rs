@@ -6,8 +6,10 @@
 
 mod client;
 mod cluster;
+mod nodes;
 mod types;
 
 pub use client::DockerClient;
 pub use cluster::{ClusterProvisioner, ProvisionedResources};
+pub use nodes::{NodeRegistry, LOCAL_NODE_ID};
 pub use types::*;

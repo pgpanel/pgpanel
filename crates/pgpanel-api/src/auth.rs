@@ -12,7 +12,7 @@ use pgpanel_core::crypto::{
     generate_csrf_token, generate_session_token, hash_password, verify_password,
 };
 use pgpanel_core::error::Error;
-use pgpanel_core::models::User;
+use pgpanel_core::models::{User, UserRole};
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -75,12 +75,13 @@ pub async fn create_bootstrap_user(
     let now = Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash, failed_login_attempts, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+        "INSERT INTO users (id, username, email, password_hash, failed_login_attempts, role, display_name, enabled, created_at) VALUES (?, ?, ?, ?, 0, 'owner', ?, 1, ?)",
     )
     .bind(id.to_string())
     .bind(username)
     .bind(email.trim())
     .bind(&hash)
+    .bind(username)
     .bind(&now)
     .execute(&state.pool)
     .await
@@ -98,6 +99,9 @@ pub async fn create_bootstrap_user(
         id,
         username: username.to_string(),
         email: email.trim().to_string(),
+        role: UserRole::Owner,
+        display_name: username.to_string(),
+        enabled: true,
         created_at: Utc::now(),
         last_login_at: None,
     })
@@ -134,7 +138,7 @@ pub async fn login(
     user_agent: Option<&str>,
 ) -> Result<(String, String, User), Error> {
     let row = sqlx::query_as::<_, UserRow>(
-        "SELECT id, username, email, password_hash, failed_login_attempts, locked_until, created_at, last_login_at FROM users WHERE username = ? COLLATE NOCASE",
+        "SELECT id, username, email, password_hash, failed_login_attempts, locked_until, created_at, last_login_at, role, display_name, enabled FROM users WHERE username = ? COLLATE NOCASE",
     )
     .bind(username)
     .fetch_optional(&state.pool)
@@ -148,6 +152,10 @@ pub async fn login(
         ));
         return Err(Error::Unauthorized);
     };
+
+    if row.enabled == 0 {
+        return Err(Error::Forbidden("account disabled".into()));
+    }
 
     if let Some(locked) = &row.locked_until {
         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(locked) {
@@ -214,6 +222,9 @@ pub async fn login(
         id: Uuid::parse_str(&row.id).unwrap_or_default(),
         username: row.username,
         email: row.email,
+        role: UserRole::parse(&row.role),
+        display_name: row.display_name,
+        enabled: row.enabled != 0,
         created_at: parse_dt(&row.created_at),
         last_login_at: Some(Utc::now()),
     };
@@ -236,8 +247,8 @@ pub async fn session_from_token(state: &AppState, token: &str) -> Result<AuthUse
     let row = sqlx::query_as::<_, SessionRow>(
         r#"
         SELECT s.id AS session_id, s.csrf_token, s.expires_at,
-               u.id AS user_id, u.username, u.created_at, u.last_login_at
-               , u.email
+               u.id AS user_id, u.username, u.created_at, u.last_login_at,
+               u.email, u.role, u.display_name, u.enabled
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ?
@@ -260,12 +271,18 @@ pub async fn session_from_token(state: &AppState, token: &str) -> Result<AuthUse
             .ok();
         return Err(Error::Unauthorized);
     }
+    if row.enabled == 0 {
+        return Err(Error::Forbidden("account disabled".into()));
+    }
 
     Ok(AuthUser {
         user: User {
             id: Uuid::parse_str(&row.user_id).unwrap_or_default(),
             username: row.username,
             email: row.email,
+            role: UserRole::parse(&row.role),
+            display_name: row.display_name,
+            enabled: true,
             created_at: parse_dt(&row.created_at),
             last_login_at: row.last_login_at.as_ref().map(|s| parse_dt(s)),
         },
@@ -310,6 +327,21 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// Reject if the authenticated user lacks admin (or owner) privileges.
+pub fn require_admin(auth: &AuthUser) -> Result<(), AppError> {
+    if !auth.user.role.can_admin() {
+        return Err(AppError(Error::Forbidden("admin role required".into())));
+    }
+    Ok(())
+}
+
+pub fn require_write(auth: &AuthUser) -> Result<(), AppError> {
+    if !auth.user.role.can_write() {
+        return Err(AppError(Error::Forbidden("write role required".into())));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn write_audit(
     state: &AppState,
@@ -351,6 +383,9 @@ struct UserRow {
     created_at: String,
     #[allow(dead_code)]
     last_login_at: Option<String>,
+    role: String,
+    display_name: String,
+    enabled: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -363,6 +398,9 @@ struct SessionRow {
     email: String,
     created_at: String,
     last_login_at: Option<String>,
+    role: String,
+    display_name: String,
+    enabled: i64,
 }
 
 fn parse_dt(s: &str) -> chrono::DateTime<Utc> {

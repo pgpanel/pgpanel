@@ -39,7 +39,7 @@ async fn list_clusters(
         SELECT id, name, slug, postgres_version, docker_container_id, docker_container_name,
                docker_volume_name, docker_network_name, internal_hostname, public_port,
                cpu_limit, memory_mb, storage_limit_gb, status, health, databasus_status,
-               delete_protection, enable_backup, last_error, created_at, updated_at
+               delete_protection, enable_backup, last_error, node_id, created_at, updated_at
         FROM clusters ORDER BY created_at DESC
         "#,
     )
@@ -95,15 +95,60 @@ async fn create_cluster(
         None
     };
 
+    let node_id = if let Some(nid) = req.node_id {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM nodes WHERE id = ? AND status != 'disabled'",
+        )
+        .bind(nid.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+        if exists.is_none() {
+            return Err(AppError(Error::Validation(
+                "selected node does not exist or is disabled".into(),
+            )));
+        }
+        // Capacity check
+        let max: Option<i64> =
+            sqlx::query_scalar("SELECT max_clusters FROM nodes WHERE id = ?")
+                .bind(nid.to_string())
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        if let Some(max) = max {
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE node_id = ?")
+                    .bind(nid.to_string())
+                    .fetch_one(&state.pool)
+                    .await
+                    .unwrap_or(0);
+            if count >= max {
+                return Err(AppError(Error::Validation(format!(
+                    "node is at capacity ({max} clusters)"
+                ))));
+            }
+        }
+        nid.to_string()
+    } else {
+        let def: Option<String> =
+            sqlx::query_scalar("SELECT id FROM nodes WHERE is_default = 1 LIMIT 1")
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        def.unwrap_or_else(|| pgpanel_docker::LOCAL_NODE_ID.to_string())
+    };
+
     sqlx::query(
         r#"
         INSERT INTO clusters (
             id, name, slug, postgres_version, docker_container_id, docker_container_name,
             docker_volume_name, docker_network_name, internal_hostname, public_port,
             cpu_limit, memory_mb, storage_limit_gb, status, health, databasus_status,
-            delete_protection, enable_backup, created_at, updated_at
+            delete_protection, enable_backup, node_id, created_at, updated_at
         ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', 'unknown',
-                  'not_configured', 0, ?, ?, ?)
+                  'not_configured', 0, ?, ?, ?, ?)
         "#,
     )
     .bind(id.to_string())
@@ -119,6 +164,7 @@ async fn create_cluster(
     .bind(req.memory_mb as i64)
     .bind(req.storage_limit_gb as i64)
     .bind(if req.enable_backup { 1 } else { 0 })
+    .bind(&node_id)
     .bind(&now)
     .bind(&now)
     .execute(&state.pool)
@@ -370,6 +416,24 @@ async fn dashboard(
         database_count,
         active_operations,
         failed_operations,
+        node_count: sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0),
+        open_alerts: sqlx::query_scalar("SELECT COUNT(*) FROM alerts WHERE status = 'open'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0),
+        replica_count: sqlx::query_scalar("SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0),
+        backup_destinations: sqlx::query_scalar(
+            "SELECT COUNT(*) FROM backup_destinations WHERE enabled = 1",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0),
     }))
 }
 
@@ -391,7 +455,7 @@ pub async fn load_cluster(state: &AppState, id: Uuid) -> Result<Cluster, AppErro
         SELECT id, name, slug, postgres_version, docker_container_id, docker_container_name,
                docker_volume_name, docker_network_name, internal_hostname, public_port,
                cpu_limit, memory_mb, storage_limit_gb, status, health, databasus_status,
-               delete_protection, enable_backup, last_error, created_at, updated_at
+               delete_protection, enable_backup, last_error, node_id, created_at, updated_at
         FROM clusters WHERE id = ?
         "#,
     )
@@ -424,6 +488,7 @@ struct ClusterRow {
     delete_protection: i64,
     enable_backup: i64,
     last_error: Option<String>,
+    node_id: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -450,6 +515,10 @@ impl ClusterRow {
             delete_protection: self.delete_protection != 0,
             enable_backup: self.enable_backup != 0,
             last_error: self.last_error,
+            node_id: self
+                .node_id
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s).ok()),
             created_at: parse_dt(&self.created_at),
             updated_at: parse_dt(&self.updated_at),
         })

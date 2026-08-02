@@ -41,10 +41,33 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 	return res.json() as Promise<T>;
 }
 
+export type UserRole = 'owner' | 'admin' | 'operator' | 'viewer';
+
 export interface User {
 	id: string;
 	username: string;
 	email: string;
+	role: UserRole;
+	display_name: string;
+	enabled: boolean;
+	created_at?: string;
+	last_login_at?: string | null;
+}
+
+export interface CreateUserRequest {
+	username: string;
+	email: string;
+	password: string;
+	role: UserRole;
+	display_name?: string;
+}
+
+export interface UpdateUserRequest {
+	email?: string;
+	role?: UserRole;
+	display_name?: string;
+	enabled?: boolean;
+	password?: string;
 }
 
 export interface MeResponse {
@@ -70,6 +93,119 @@ export interface Cluster {
 	created_at: string;
 	internal_hostname?: string;
 	docker_container_name?: string;
+	node_id?: string | null;
+}
+
+export type NodeKind = 'local' | 'remote';
+export type NodeStatus = 'online' | 'offline' | 'unknown';
+
+export interface Node {
+	id: string;
+	name: string;
+	slug: string;
+	kind: NodeKind;
+	docker_host_display: string | null;
+	status: NodeStatus;
+	last_seen_at: string | null;
+	last_error: string | null;
+	max_clusters: number | null;
+	cluster_count: number;
+	notes: string | null;
+	is_default: boolean;
+	labels: Record<string, unknown>;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WafPolicyConfig {
+	rate_limit_per_minute: number;
+	login_rate_limit_per_minute: number;
+	api_rate_limit_per_minute: number;
+	max_body_bytes: number;
+	block_empty_user_agent: boolean;
+	blocked_user_agents: string[];
+	allowed_ips: string[];
+	denied_ips: string[];
+	blocked_paths: string[];
+	challenge_suspicious: boolean;
+	geo_block_countries: string[];
+	enable_security_headers: boolean;
+	hsts_max_age: number;
+	csp_mode: string;
+	fail_closed_on_deny: boolean;
+}
+
+export interface WafPolicy {
+	id: string;
+	name: string;
+	enabled: boolean;
+	is_active: boolean;
+	version: number;
+	config: WafPolicyConfig;
+	notes: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WafChangeEntry {
+	id: number;
+	policy_id: string;
+	version_from: number | null;
+	version_to: number;
+	actor_username: string | null;
+	change_summary: string;
+	before_json: unknown;
+	after_json: unknown;
+	reason: string | null;
+	ip_address: string | null;
+	created_at: string;
+}
+
+export interface BackupSchedule {
+	id: string;
+	cluster_id: string;
+	cron: string;
+	kind: string;
+	database_name: string;
+	enabled: boolean;
+	retention_days: number;
+	keep_count: number;
+	compression_level: number;
+	dump_format: string;
+	schema_only: boolean;
+	exclude_schemas: string;
+	exclude_tables: string;
+	include_schemas: string;
+	jobs: number;
+	notify_on_success: boolean;
+	notify_on_failure: boolean;
+	verify_after: boolean;
+	window_start_hour: number | null;
+	window_end_hour: number | null;
+	pause_until: string | null;
+	next_run_at: string | null;
+	description: string | null;
+	last_run_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface GlobalBackupPolicy {
+	retention_days: number;
+	keep_count: number;
+	schedule_hour: number;
+	cron_default: string;
+	compression_level: number;
+	dump_format: string;
+	verify_after: boolean;
+	keep_local_copy: boolean;
+	notify_webhook: string;
+	notify_on_success: boolean;
+	notify_on_failure: boolean;
+	exclude_schemas_default: string;
+	wal_archiving_default: boolean;
+	parallel_jobs: number;
+	encrypt: boolean;
 }
 
 export interface DashboardStats {
@@ -79,6 +215,217 @@ export interface DashboardStats {
 	database_count: number;
 	active_operations: number;
 	failed_operations: number;
+	node_count: number;
+	open_alerts: number;
+	replica_count: number;
+	backup_destinations: number;
+}
+
+export interface BackupDestination {
+	id: string;
+	name: string;
+	slug: string;
+	storage_type: string;
+	endpoint: string;
+	region: string;
+	bucket: string;
+	prefix: string;
+	path_style: boolean;
+	tls_verify: boolean;
+	encrypt_backups: boolean;
+	compression_level: number;
+	enabled: boolean;
+	is_default: boolean;
+	access_key_set: boolean;
+	secret_key_set: boolean;
+	notes: string | null;
+	last_test_at: string | null;
+	last_test_ok: boolean | null;
+	last_test_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface UpsertBackupDestinationRequest {
+	name: string;
+	storage_type: string;
+	endpoint?: string;
+	region?: string;
+	bucket?: string;
+	prefix?: string;
+	path_style?: boolean;
+	tls_verify?: boolean;
+	encrypt_backups?: boolean;
+	compression_level?: number;
+	access_key?: string;
+	secret_key?: string;
+	notes?: string | null;
+	set_default?: boolean;
+	enabled?: boolean;
+	allowed_node_ids?: string[];
+}
+
+export interface ClusterBackupTarget {
+	id: string;
+	cluster_id: string;
+	destination_id: string;
+	destination_name: string;
+	enabled: boolean;
+	priority: number;
+	include_databases: string;
+	exclude_databases: string;
+	cron: string;
+	retention_days: number;
+	keep_count: number;
+	schema_only: boolean;
+	verify_after: boolean;
+	compression_level: number | null;
+	dump_format: string;
+	exclude_schemas: string;
+	exclude_tables: string;
+	parallel_jobs: number;
+	notify_on_success: boolean;
+	notify_on_failure: boolean;
+	window_start_hour: number | null;
+	window_end_hour: number | null;
+	last_run_at: string | null;
+	last_status: string | null;
+}
+
+export interface UpsertClusterBackupTargetRequest {
+	destination_id: string;
+	enabled?: boolean;
+	priority?: number;
+	include_databases?: string;
+	exclude_databases?: string;
+	cron?: string;
+	retention_days?: number;
+	keep_count?: number;
+	schema_only?: boolean;
+	verify_after?: boolean;
+	compression_level?: number | null;
+	dump_format?: string;
+	exclude_schemas?: string;
+	exclude_tables?: string;
+	parallel_jobs?: number;
+	notify_on_success?: boolean;
+	notify_on_failure?: boolean;
+	window_start_hour?: number | null;
+	window_end_hour?: number | null;
+}
+
+export interface ClusterReplica {
+	id: string;
+	primary_cluster_id: string;
+	replica_cluster_id: string | null;
+	name: string;
+	mode: string;
+	target_node_id: string;
+	sync_cron: string;
+	status: string;
+	lag_seconds: number | null;
+	last_sync_at: string | null;
+	last_error: string | null;
+	auto_failover: boolean;
+	promote_protection: boolean;
+	enabled: boolean;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreateReplicaRequest {
+	name: string;
+	target_node_id: string;
+	mode?: string;
+	sync_cron?: string;
+	auto_failover?: boolean;
+	provision_now?: boolean;
+}
+
+export interface AlertRule {
+	id: string;
+	name: string;
+	enabled: boolean;
+	severity: string;
+	metric: string;
+	operator: string;
+	threshold: number;
+	duration_seconds: number;
+	scope: string;
+	scope_id: string | null;
+	notify_channels: string;
+	cooldown_seconds: number;
+}
+
+export interface Alert {
+	id: string;
+	rule_id: string | null;
+	severity: string;
+	title: string;
+	message: string;
+	resource_type: string | null;
+	resource_id: string | null;
+	status: string;
+	fired_at: string;
+	acked_at: string | null;
+	resolved_at: string | null;
+}
+
+export interface MonitoringOverview {
+	cluster_count: number;
+	healthy_count: number;
+	open_alerts: number;
+	avg_cpu: number;
+	avg_memory_mb: number;
+	backups_last_24h: number;
+	failed_backups_24h: number;
+	replica_healthy: number;
+	replica_total: number;
+	series: MonitoringPoint[];
+	top_clusters: ClusterLoadRow[];
+}
+
+export interface MonitoringPoint {
+	at: string;
+	cpu: number;
+	memory_mb: number;
+}
+
+export interface ClusterLoadRow {
+	cluster_id: string;
+	name: string;
+	cpu_percent: number;
+	memory_usage_mb: number;
+	status: string;
+}
+
+export interface ApiTokenInfo {
+	id: string;
+	name: string;
+	token_prefix: string;
+	role: string;
+	scopes: string;
+	expires_at: string | null;
+	last_used_at: string | null;
+	revoked_at: string | null;
+	created_at: string;
+}
+
+export interface ApiTokenCreated {
+	id: string;
+	name: string;
+	token: string;
+	token_prefix: string;
+	role: string;
+	scopes: string;
+	expires_at: string | null;
+}
+
+export interface CreateApiTokenRequest {
+	name: string;
+	role?: string;
+	scopes?: string;
+	expires_days?: number | null;
 }
 
 export interface Operation {

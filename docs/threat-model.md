@@ -52,12 +52,18 @@ Internet
 | Backup logic bugs | Outsourced to Databasus; panel only orchestrates |
 | Panel DB on managed PG | SQLite local to panel so cluster failure ≠ panel failure |
 
-## Out of scope for MVP
+## Out of scope (future)
 
-- Multi-tenant RBAC / multiple admin roles
-- Full WAF ruleset
+- Multi-tenant RBAC / multiple admin roles with least privilege
 - Hardware security modules for master key
 - Automated CVE scanning pipeline (recommended for ops)
+
+## In scope (current)
+
+- In-app WAF policy + change history (`waf_policies` / `waf_change_log`)
+- Multi-node Docker hosts (`nodes` table; local + remote)
+- Native backup schedules, restore, retention prune
+
 
 ## Residual risks
 

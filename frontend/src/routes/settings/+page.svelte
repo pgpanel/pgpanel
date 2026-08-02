@@ -1,18 +1,28 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api';
+	import { api, type GlobalBackupPolicy, type ApiTokenInfo, type ApiTokenCreated } from '$lib/api';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
+	import { toast } from 'svelte-sonner';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
-	import { CheckmarkCircle02Icon, Alert02Icon, CloudUploadIcon, RefreshIcon } from '@hugeicons/core-free-icons';
+	import {
+		CheckmarkCircle02Icon,
+		Alert02Icon,
+		CloudUploadIcon,
+		RefreshIcon,
+		CloudBackupIcon,
+		Key01Icon,
+		Delete02Icon,
+		Copy01Icon
+	} from '@hugeicons/core-free-icons';
 
 	let health = $state<{ status: string; version: string } | null>(null);
 	let ready = $state<{ ready: boolean; database: boolean; docker: boolean } | null>(null);
@@ -37,17 +47,115 @@
 	let storageMessage = $state('');
 	let storageError = $state('');
 
+	let backupPolicy = $state<GlobalBackupPolicy>({
+		retention_days: 14,
+		keep_count: 30,
+		schedule_hour: 3,
+		cron_default: '0 3 * * *',
+		compression_level: 6,
+		dump_format: 'custom',
+		verify_after: false,
+		keep_local_copy: false,
+		notify_webhook: '',
+		notify_on_success: false,
+		notify_on_failure: true,
+		exclude_schemas_default: '',
+		wal_archiving_default: false,
+		parallel_jobs: 1,
+		encrypt: true
+	});
+	let backupSaving = $state(false);
+	let backupMessage = $state('');
+	let backupError = $state('');
+
+	let tokens = $state<ApiTokenInfo[]>([]);
+	let tokenName = $state('');
+	let tokenRole = $state('operator');
+	let tokenScopes = $state('read,write');
+	let tokenExpiresDays = $state<number | ''>('');
+	let tokenCreating = $state(false);
+	let createdToken = $state<ApiTokenCreated | null>(null);
+
 	onMount(async () => {
 		try {
-			[health, ready, storage] = await Promise.all([
+			[health, ready, storage, backupPolicy, tokens] = await Promise.all([
 				api<{ status: string; version: string }>('/health'),
 				api<{ ready: boolean; database: boolean; docker: boolean }>('/ready'),
-				api<typeof storage>('/api/settings/storage')
+				api<typeof storage>('/api/settings/storage'),
+				api<GlobalBackupPolicy>('/api/settings/backup-policy'),
+				api<ApiTokenInfo[]>('/api/tokens').catch(() => [] as ApiTokenInfo[])
 			]);
 		} catch {
 			storageError = 'Could not load the current storage configuration';
 		}
 	});
+
+	async function loadTokens() {
+		tokens = await api<ApiTokenInfo[]>('/api/tokens');
+	}
+
+	async function createToken(e: Event) {
+		e.preventDefault();
+		tokenCreating = true;
+		createdToken = null;
+		try {
+			createdToken = await api<ApiTokenCreated>('/api/tokens', {
+				method: 'POST',
+				body: JSON.stringify({
+					name: tokenName,
+					role: tokenRole,
+					scopes: tokenScopes,
+					expires_days: tokenExpiresDays === '' ? null : tokenExpiresDays
+				})
+			});
+			toast.success('API token created — copy it now');
+			tokenName = '';
+			tokenExpiresDays = '';
+			await loadTokens();
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : 'Token creation failed');
+		} finally {
+			tokenCreating = false;
+		}
+	}
+
+	async function revokeToken(id: string) {
+		if (!confirm('Revoke this API token?')) return;
+		try {
+			await api(`/api/tokens/${id}`, { method: 'DELETE' });
+			toast.success('Token revoked');
+			await loadTokens();
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : 'Revoke failed');
+		}
+	}
+
+	async function copyToken() {
+		if (!createdToken) return;
+		try {
+			await navigator.clipboard.writeText(createdToken.token);
+			toast.success('Token copied to clipboard');
+		} catch {
+			toast.error('Could not copy — select and copy manually');
+		}
+	}
+
+	async function saveBackupPolicy() {
+		backupSaving = true;
+		backupMessage = '';
+		backupError = '';
+		try {
+			backupPolicy = await api<GlobalBackupPolicy>('/api/settings/backup-policy', {
+				method: 'POST',
+				body: JSON.stringify(backupPolicy)
+			});
+			backupMessage = 'Backup policy saved.';
+		} catch (e) {
+			backupError = e instanceof Error ? e.message : 'Backup policy save failed';
+		} finally {
+			backupSaving = false;
+		}
+	}
 
 	async function saveStorage() {
 		storageSaving = true;
@@ -177,6 +285,217 @@
 			{storageSaving ? 'Testing…' : 'Save & test connection'}
 		</Button>
 	</Card.Footer>
+</Card.Root>
+
+{#if backupError}
+	<Alert.Root variant="destructive" class="mb-4">
+		<HugeiconsIcon icon={Alert02Icon} class="size-4" strokeWidth={2} />
+		<Alert.Description>{backupError}</Alert.Description>
+	</Alert.Root>
+{/if}
+
+<Card.Root class="mb-6 border-border/60">
+	<Card.Header class="flex-row items-start justify-between gap-4">
+		<div>
+			<Card.Title class="flex items-center gap-2">
+				<HugeiconsIcon icon={CloudBackupIcon} class="size-5 text-primary" strokeWidth={2} />
+				Backup policy
+			</Card.Title>
+			<Card.Description>Global defaults for new backup schedules and retention behavior</Card.Description>
+		</div>
+		{#if backupMessage}
+			<Badge variant="default">{backupMessage}</Badge>
+		{/if}
+	</Card.Header>
+	<Card.Content class="space-y-6">
+		<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+			<div class="space-y-2">
+				<Label>Retention (days)</Label>
+				<Input type="number" min="1" max="3650" bind:value={backupPolicy.retention_days} />
+			</div>
+			<div class="space-y-2">
+				<Label>Keep at most</Label>
+				<Input type="number" min="1" max="10000" bind:value={backupPolicy.keep_count} />
+			</div>
+			<div class="space-y-2">
+				<Label>Default cron</Label>
+				<Input bind:value={backupPolicy.cron_default} class="font-mono" placeholder="0 3 * * *" />
+			</div>
+			<div class="space-y-2">
+				<Label>Schedule hour (UTC)</Label>
+				<Input type="number" min="0" max="23" bind:value={backupPolicy.schedule_hour} />
+			</div>
+			<div class="space-y-2">
+				<Label>Compression (0–9)</Label>
+				<Input type="number" min="0" max="9" bind:value={backupPolicy.compression_level} />
+			</div>
+			<div class="space-y-2">
+				<Label>Parallel jobs</Label>
+				<Input type="number" min="1" max="16" bind:value={backupPolicy.parallel_jobs} />
+			</div>
+			<div class="space-y-2">
+				<Label>Dump format</Label>
+				<Select.Root type="single" bind:value={backupPolicy.dump_format}>
+					<Select.Trigger class="w-full">{backupPolicy.dump_format}</Select.Trigger>
+					<Select.Content>
+						<Select.Item value="custom" label="custom">custom</Select.Item>
+						<Select.Item value="plain" label="plain">plain</Select.Item>
+						<Select.Item value="directory" label="directory">directory</Select.Item>
+					</Select.Content>
+				</Select.Root>
+			</div>
+			<div class="space-y-2 md:col-span-2">
+				<Label>Notify webhook URL</Label>
+				<Input bind:value={backupPolicy.notify_webhook} placeholder="https://hooks.example.com/..." />
+			</div>
+			<div class="space-y-2 md:col-span-2 lg:col-span-3">
+				<Label>Exclude schemas (default)</Label>
+				<Input bind:value={backupPolicy.exclude_schemas_default} class="font-mono" placeholder="pg_catalog,information_schema" />
+			</div>
+		</div>
+		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>Verify after backup</span>
+				<Switch bind:checked={backupPolicy.verify_after} />
+			</label>
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>Keep local copy</span>
+				<Switch bind:checked={backupPolicy.keep_local_copy} />
+			</label>
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>Notify on success</span>
+				<Switch bind:checked={backupPolicy.notify_on_success} />
+			</label>
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>Notify on failure</span>
+				<Switch bind:checked={backupPolicy.notify_on_failure} />
+			</label>
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>WAL archiving default</span>
+				<Switch bind:checked={backupPolicy.wal_archiving_default} />
+			</label>
+			<label class="flex items-center justify-between rounded-lg border border-border/60 p-3 text-sm">
+				<span>Encrypt backups</span>
+				<Switch bind:checked={backupPolicy.encrypt} />
+			</label>
+		</div>
+	</Card.Content>
+	<Card.Footer class="justify-end">
+		<Button onclick={saveBackupPolicy} disabled={backupSaving}>
+			<HugeiconsIcon icon={RefreshIcon} class="size-4" strokeWidth={2} />
+			{backupSaving ? 'Saving…' : 'Save backup policy'}
+		</Button>
+	</Card.Footer>
+</Card.Root>
+
+<Card.Root class="mb-6 border-border/60">
+	<Card.Header class="flex-row items-start justify-between gap-4">
+		<div>
+			<Card.Title class="flex items-center gap-2">
+				<HugeiconsIcon icon={Key01Icon} class="size-5 text-primary" strokeWidth={2} />
+				API tokens
+			</Card.Title>
+			<Card.Description>Programmatic access with scoped roles — shown once at creation</Card.Description>
+		</div>
+	</Card.Header>
+	<Card.Content class="space-y-6">
+		{#if createdToken}
+			<Alert.Root class="border-primary/40 bg-primary/5">
+				<HugeiconsIcon icon={Key01Icon} class="size-4" strokeWidth={2} />
+				<Alert.Title>Copy your new token</Alert.Title>
+				<Alert.Description class="space-y-3">
+					<p class="text-sm">This token will not be shown again.</p>
+					<code class="block break-all rounded-lg bg-muted/60 p-3 font-mono text-xs">{createdToken.token}</code>
+					<Button size="sm" variant="outline" onclick={copyToken}>
+						<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+						Copy token
+					</Button>
+				</Alert.Description>
+			</Alert.Root>
+		{/if}
+
+		<form class="grid gap-4 md:grid-cols-2 lg:grid-cols-4" onsubmit={createToken}>
+			<div class="space-y-2 lg:col-span-2">
+				<Label for="token-name">Name</Label>
+				<Input id="token-name" bind:value={tokenName} placeholder="CI deploy" required />
+			</div>
+			<div class="space-y-2">
+				<Label>Role</Label>
+				<Select.Root type="single" bind:value={tokenRole}>
+					<Select.Trigger class="w-full capitalize">{tokenRole}</Select.Trigger>
+					<Select.Content>
+						<Select.Item value="admin" label="admin">admin</Select.Item>
+						<Select.Item value="operator" label="operator">operator</Select.Item>
+						<Select.Item value="viewer" label="viewer">viewer</Select.Item>
+					</Select.Content>
+				</Select.Root>
+			</div>
+			<div class="space-y-2">
+				<Label for="expires-days">Expires (days)</Label>
+				<Input
+					id="expires-days"
+					type="number"
+					min="1"
+					bind:value={tokenExpiresDays}
+					placeholder="Never"
+				/>
+			</div>
+			<div class="space-y-2 md:col-span-2 lg:col-span-4">
+				<Label for="token-scopes">Scopes</Label>
+				<Input id="token-scopes" bind:value={tokenScopes} class="font-mono" placeholder="read,write" />
+			</div>
+			<div class="md:col-span-2 lg:col-span-4">
+				<Button type="submit" disabled={tokenCreating}>
+					<HugeiconsIcon icon={Key01Icon} class="size-4" strokeWidth={2} />
+					{tokenCreating ? 'Creating…' : 'Create token'}
+				</Button>
+			</div>
+		</form>
+
+		{#if tokens.length > 0}
+			<div class="rounded-lg border border-border/60">
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="border-b border-border/60 text-left text-xs text-muted-foreground">
+							<th class="p-3 font-medium">Name</th>
+							<th class="p-3 font-medium">Prefix</th>
+							<th class="p-3 font-medium">Role</th>
+							<th class="p-3 font-medium">Status</th>
+							<th class="p-3 text-right font-medium">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each tokens as t (t.id)}
+							<tr class="border-b border-border/40 last:border-0">
+								<td class="p-3 font-medium">{t.name}</td>
+								<td class="p-3 font-mono text-xs">{t.token_prefix}…</td>
+								<td class="p-3 capitalize">{t.role}</td>
+								<td class="p-3">
+									{#if t.revoked_at}
+										<Badge variant="destructive">revoked</Badge>
+									{:else if t.expires_at && new Date(t.expires_at) < new Date()}
+										<Badge variant="secondary">expired</Badge>
+									{:else}
+										<Badge variant="default">active</Badge>
+									{/if}
+								</td>
+								<td class="p-3 text-right">
+									{#if !t.revoked_at}
+										<Button variant="ghost" size="sm" onclick={() => revokeToken(t.id)}>
+											<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
+											Revoke
+										</Button>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{:else}
+			<p class="text-sm text-muted-foreground">No API tokens yet.</p>
+		{/if}
+	</Card.Content>
 </Card.Root>
 
 <div class="grid gap-4 md:grid-cols-2">
