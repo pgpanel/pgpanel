@@ -1,119 +1,96 @@
-# PgPanel installation guide
+# PgPanel telepítés
 
-## Overview
+**Fejlesztő:** Dezső Benedek Péter  
 
-The production installer (`deploy/install.sh`) is an interactive Bash script that sets up:
-
-- Docker Engine + Compose plugin
-- PgPanel (API + static frontend in one container)
-- Caddy reverse proxy (HTTPS)
-- Databasus (backup service, separate container)
-- Networks, volumes, host directories
-- Optional UFW firewall, swap, sysctl
-- Management CLI: `pgpanel`
-
-**Target:** Linux VPS (multi-distro). Primary test matrix: Ubuntu 22.04 / 24.04, Debian 12. Also supports RHEL-family, Fedora, Amazon Linux 2023, openSUSE, Arch (best-effort).
-
-## Quick start
+## Egy parancs (production)
 
 ```bash
-# From a git clone on the VPS:
-sudo bash deploy/install.sh
+sudo apt-get update && sudo apt-get install -y curl && \
+curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 ```
 
-Menu:
+A telepítő **nem kér** Git repository URL-t. A hivatalos forrás rögzített:
 
-1. Új telepítés  
-2. Frissítés  
-3. Repair  
-4. Configure  
-5. Security check  
-6. Backup-integration test  
-7. Uninstall  
-8. Exit  
+`https://github.com/pgpanel/pgpanel.git`
 
-Non-interactive (uses conf/defaults where possible):
+## Kell-e a VPS-nek fordítania?
+
+**Nem (alapértelmezés).**
+
+| Komponens | A VPS-en |
+|-----------|---------|
+| Rust API + frontend | **Előre buildelt** Docker image: `ghcr.io/pgpanel/pgpanel:<verzió>` |
+| Caddy, Databasus | Hivatalos image pull |
+| PostgreSQL clusterek | Dinamikus container a panel által |
+
+A CI (`.github/workflows/docker-publish.yml`) multi-arch (`amd64`/`arm64`) image-t tol a GHCR-re. A VPS csak `docker compose pull` + `up`.
+
+Helyi fordítás csak ha az image nem elérhető:
 
 ```bash
-sudo bash deploy/install.sh --mode install --non-interactive
+sudo bash /opt/pgpanel/deploy/install.sh --build-local
+# vagy: PGPANEL_BUILD_LOCAL=1
 ```
 
-## Minimum requirements
+## Frissítés (adatvesztés nélkül)
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | 2 | 4 |
-| RAM | 4 GB | 8 GB |
-| Disk | 30 GB free | 80 GB NVMe |
+```bash
+sudo pgpanel update
+# vagy menü → 2. Frissítés
+# vagy: sudo bash /opt/pgpanel/deploy/install.sh --mode update
+```
 
-Below-minimum hosts require explicit confirmation.
+A frissítő:
 
-## Default paths
+1. **Verzióellenőrzés** (helyi `VERSION` vs remote)
+2. Config + panel SQLite backup (`/opt/pgpanel/backups/config/<timestamp>/`)
+3. Hivatalos repo `git pull` / checkout
+4. **Új image pull** (nem töröl volume-ot)
+5. `docker compose up -d` (**soha** `down -v`)
+6. Health check; hibánál rollback ajánlat
 
-| Path | Purpose |
-|------|---------|
-| `/opt/pgpanel` | Application install |
-| `/var/lib/pgpanel` | Panel SQLite, Databasus data |
-| `/var/lib/pgpanel/clusters` | Host path hint for cluster data |
-| `/var/log/pgpanel` | Installer logs |
-| `/etc/pgpanel/installer.conf` | Non-secret installer config |
-| `/opt/pgpanel/.env` | **Secrets** (mode `0600`) |
-| `/usr/local/bin/pgpanel` | Management CLI |
+**Megmarad:**
 
-Cluster data must **never** live inside the git working tree.
+- `/opt/pgpanel/.env` titkok  
+- panel SQLite  
+- PostgreSQL Docker volume-ok  
+- Databasus adatok  
 
-## Domain & TLS
+## Verzió
 
-- Preferred: real domain + Let's Encrypt via Caddy  
-- Without domain: HTTP-only allowed with strong warning (not production-safe)  
-- Cloudflare proxy: set the installer flag; ensure DNS/SSL mode compatible with Caddy  
+```bash
+pgpanel version
+sudo bash /opt/pgpanel/deploy/install.sh --mode version
+```
 
-## Databasus & backups
+Verzió forrása: gyökér `VERSION` fájl (pl. `0.1.0`).
 
-PgPanel does **not** reimplement WAL/PITR. Databasus runs as a sibling container.
+## Alapértelmezett admin
 
-The installer:
+| Mező | Érték |
+|------|--------|
+| User | `admin` (telepítéskor változtatható) |
+| Jelszó | Generált / megadott — **nincs** fix gyári jelszó |
+| Setup | `https://DOMAIN/setup` |
 
-- generates internal tokens in `.env`
-- optionally probes S3-compatible storage (list/write/delete)
-- does **not** invent undocumented Databasus HTTP APIs
-
-If automatic registration is unavailable, status is **Pending manual setup** — complete storage/backup policy in the Databasus UI using credentials from PgPanel.
-
-**Do not mark the deployment production-ready** until backup **and** restore verification succeed.
-
-## Management CLI
+## Hasznos parancsok
 
 ```bash
 pgpanel status
-pgpanel start|stop|restart
-pgpanel logs [service]
+pgpanel logs
 pgpanel update
+pgpanel version
 pgpanel repair
-pgpanel configure
-pgpanel backup-test
 pgpanel security-check
 pgpanel uninstall
-pgpanel version
-pgpanel env-check
 ```
 
-## Logging
+## Elérési utak
 
-- Installer: `/var/log/pgpanel/installer.log` (secrets masked)  
-- Summary (redacted): `/var/log/pgpanel/install-summary.txt`  
-- Container logs: `pgpanel logs`  
-
-## Security notes
-
-See [SECURITY.md](../SECURITY.md), [threat-model.md](threat-model.md), and [security-install.md](security-install.md).
-
-Critical residual risk: **Docker socket mounted into the panel container**.
-
-## Uninstall
-
-```bash
-sudo pgpanel uninstall
-```
-
-Modes range from stop containers only → full wipe. Full data wipe requires typing `DELETE ALL DATA`. External S3 backups are never deleted by the installer.
+| Útvonal | Tartalom |
+|---------|----------|
+| `/opt/pgpanel` | Alkalmazás / compose |
+| `/opt/pgpanel/.env` | Titkok (`0600`) |
+| `/var/lib/pgpanel` | Panel + Databasus adatok |
+| `/etc/pgpanel/installer.conf` | Nem-titkos telepítő config |
+| `/var/log/pgpanel` | Installer log |

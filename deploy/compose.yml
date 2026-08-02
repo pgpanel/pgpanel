@@ -1,9 +1,8 @@
-# PgPanel production stack template
-# Rendered/overwritten by install.sh with host-specific paths.
-# PostgreSQL clusters are created dynamically by the panel — NOT listed here.
+# PgPanel production stack
+# Panel image is pre-built (GHCR). VPS does NOT compile Rust/frontend by default.
+# PostgreSQL clusters are created dynamically by the panel — not listed here.
 #
-# SECURITY: The panel service mounts the Docker socket (host-root equivalent).
-# Databasus and Caddy must never receive the socket. See SECURITY.md.
+# SECURITY: panel mounts Docker socket (host-root equivalent). See SECURITY.md.
 
 name: pgpanel
 
@@ -60,9 +59,9 @@ services:
       - /config/caddy
 
   panel:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    # Pre-built multi-arch image — no on-server cargo/npm build required.
+    image: ${PGPANEL_IMAGE:-ghcr.io/pgpanel/pgpanel:0.1.0}
+    pull_policy: ${PGPANEL_PULL_POLICY:-always}
     restart: unless-stopped
     env_file:
       - ../.env
@@ -100,7 +99,6 @@ services:
       - databasus
 
   databasus:
-    # Pin a specific tag in production — never rely on floating latest long-term.
     image: ${DATABASUS_IMAGE:-ghcr.io/databasus/databasus:latest}
     restart: unless-stopped
     env_file:
@@ -126,4 +124,3 @@ services:
         max-file: "5"
     security_opt:
       - no-new-privileges:true
-    # Databasus MUST NOT mount /var/run/docker.sock

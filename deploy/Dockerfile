@@ -24,6 +24,14 @@ RUN cargo build --release -p pgpanel-api
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
+ARG PGPANEL_VERSION=0.1.0
+LABEL org.opencontainers.image.title="PgPanel" \
+      org.opencontainers.image.description="Self-hosted PostgreSQL management panel" \
+      org.opencontainers.image.vendor="Dezső Benedek Péter" \
+      org.opencontainers.image.authors="Dezső Benedek Péter" \
+      org.opencontainers.image.source="https://github.com/pgpanel/pgpanel" \
+      org.opencontainers.image.version="${PGPANEL_VERSION}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
@@ -34,16 +42,16 @@ WORKDIR /app
 COPY --from=backend /src/target/release/pgpanel /app/pgpanel
 COPY --from=backend /src/migrations /app/migrations
 COPY --from=frontend /frontend/build /app/static
+COPY VERSION /app/VERSION
 
 ENV PGPANEL_BIND=0.0.0.0:8080 \
     PGPANEL_DATA_DIR=/var/lib/pgpanel \
     PGPANEL_STATIC_DIR=/app/static \
     PGPANEL_COOKIE_SECURE=true \
+    PGPANEL_VERSION=${PGPANEL_VERSION} \
     RUST_LOG=pgpanel=info,tower_http=info
 
 # Docker socket is mounted at runtime (privileged risk — see SECURITY.md).
-# Panel process runs as root only if socket permissions require it;
-# prefer rootless docker or a dedicated docker group in production.
 
 EXPOSE 8080
 VOLUME ["/var/lib/pgpanel"]

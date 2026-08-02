@@ -1,5 +1,7 @@
 # Installer security guide
 
+**Developer:** Dezső Benedek Péter
+
 ## Secret handling
 
 | Item | Rule |

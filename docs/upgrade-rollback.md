@@ -1,74 +1,54 @@
-# Upgrade and rollback
+# Frissítés és visszavonás
 
-## Update flow (`pgpanel update`)
+**Fejlesztő:** Dezső Benedek Péter  
 
-1. Load `/etc/pgpanel/installer.conf`  
-2. Backup config to `/opt/pgpanel/backups/config/<timestamp>/`  
-   - `.env`  
-   - `installer.conf`  
-   - panel SQLite `panel.db` if present  
-3. Fetch/checkout git ref (or rsync local tree)  
-4. **Do not regenerate secrets**  
-5. Re-render `compose.yml` + `Caddyfile`  
-6. `docker compose pull/build/up -d`  
-7. Health checks (`/health`, `/ready`, containers)  
-8. On failure: offer rollback of `.env` and re-up  
+## Frissítés productionben
 
-### What update must never delete
+```bash
+sudo pgpanel update
+```
 
-- PostgreSQL Docker volumes (`pgpanel_vol_*`)  
-- Databasus data directory  
-- `/opt/pgpanel/.env` secrets (except restore from backup you choose)  
-- Panel SQLite (except the timestamped backup copy)  
-- Backup storage objects in S3/R2/etc.  
+### Lépések
 
-## Rollback procedure
+1. Helyi vs remote verzió megjelenítése  
+2. Megerősítés  
+3. Backup: `.env`, `installer.conf`, `panel.db` → `/opt/pgpanel/backups/config/<ts>/`  
+4. Hivatalos git fa frissítése (`https://github.com/pgpanel/pgpanel.git`)  
+5. `PGPANEL_IMAGE` pin frissítése a `VERSION` alapján  
+6. `docker compose pull` + `up -d --remove-orphans`  
+7. Health check  
 
-### Soft rollback (config)
+### Amit soha nem töröl
+
+- PostgreSQL volume-ok (`pgpanel_vol_*`)  
+- Databasus adatkönyvtár  
+- `.env` titkok (kivéve te állítod vissza backupból)  
+- panel SQLite (kivéve explicit restore)  
+
+## Verzióellenőrzés
+
+```bash
+pgpanel version
+```
+
+## Rollback
 
 ```bash
 BACKUP=/opt/pgpanel/backups/config/YYYYMMDDHHMMSS
 sudo cp -a "$BACKUP/.env" /opt/pgpanel/.env
 sudo chmod 0600 /opt/pgpanel/.env
+# opcionális panel DB:
+sudo docker compose -f /opt/pgpanel/deploy/compose.yml stop panel
+sudo cp -a "$BACKUP/panel.db" /var/lib/pgpanel/panel/panel.db
 cd /opt/pgpanel/deploy && sudo docker compose up -d
 sudo pgpanel status
 ```
 
-### Application code rollback
+Image pin a `.env` `PGPANEL_IMAGE=` sorában (pl. `ghcr.io/pgpanel/pgpanel:0.1.0`).
 
-```bash
-cd /opt/pgpanel
-sudo git fetch --tags
-sudo git checkout <previous-tag-or-commit>
-cd deploy && sudo docker compose build && sudo docker compose up -d
-```
+## Csatornák
 
-### Database (panel SQLite)
-
-```bash
-sudo docker compose -f /opt/pgpanel/deploy/compose.yml stop panel
-sudo cp -a /opt/pgpanel/backups/config/<ts>/panel.db /var/lib/pgpanel/panel/panel.db
-sudo docker compose -f /opt/pgpanel/deploy/compose.yml start panel
-```
-
-## Repair vs update
-
-| Mode | Use when |
-|------|----------|
-| `repair` | networks missing, containers stopped, perms wrong, compose file missing — **no secret regen** |
-| `update` | new PgPanel version / image rebuild |
-| `configure` | change domain, notify, backup settings without full reinstall |
-
-## Channel: stable vs edge
-
-Stored in `UPDATE_CHANNEL` / installer conf. Edge may track `main`; stable should pin tags once you publish releases.
-
-## Production readiness gate
-
-`PRODUCTION_READY` stays `0` until:
-
-1. Databasus backup storage verified  
-2. At least one successful backup of a real or test cluster  
-3. Restore verification succeeds  
-
-Document the gate in ops runbooks; the installer will not flip the flag automatically on green health alone.
+| Channel | Image tag |
+|---------|-----------|
+| stable | `ghcr.io/pgpanel/pgpanel:<VERSION>` |
+| edge | `ghcr.io/pgpanel/pgpanel:latest` |

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # PgPanel management CLI — installed to /usr/local/bin/pgpanel
+# Developer: Dezső Benedek Péter
 # shellcheck disable=SC1091
 set -Eeuo pipefail
 
 readonly CONF_FILE="/etc/pgpanel/installer.conf"
 readonly DEFAULT_INSTALL_DIR="/opt/pgpanel"
+readonly OFFICIAL_REPO="https://github.com/pgpanel/pgpanel.git"
 
 load_conf() {
   if [[ -f "$CONF_FILE" ]]; then
@@ -39,26 +41,34 @@ compose() {
     echo "Compose file not found: $COMPOSE_FILE" >&2
     exit 1
   fi
-  (cd "$(dirname "$COMPOSE_FILE")" && docker compose -f compose.yml "$@")
+  (
+    cd "$(dirname "$COMPOSE_FILE")"
+    if [[ -f "${INSTALL_DIR}/.env" ]]; then
+      set -a
+      # shellcheck source=/dev/null
+      source "${INSTALL_DIR}/.env"
+      set +a
+    fi
+    docker compose -f compose.yml "$@"
+  )
 }
 
 usage() {
   cat <<'EOF'
 PgPanel management CLI
+Developer: Dezső Benedek Péter
 
 Usage:
   pgpanel status
-  pgpanel start
-  pgpanel stop
-  pgpanel restart
+  pgpanel start|stop|restart
   pgpanel logs [service]
-  pgpanel update
+  pgpanel update              # upgrade without data loss
+  pgpanel version             # local + remote version check
   pgpanel repair
   pgpanel configure
   pgpanel backup-test
   pgpanel security-check
   pgpanel uninstall
-  pgpanel version
   pgpanel env-check
 
 EOF
@@ -77,22 +87,38 @@ cmd_status() {
   echo "=== Disk ==="
   df -h "$DATA_DIR" 2>/dev/null || df -h /
   echo ""
-  echo "=== .env perms ==="
+  if [[ -f "${INSTALL_DIR}/VERSION" ]]; then
+    echo "VERSION file: $(tr -d ' \n' <"${INSTALL_DIR}/VERSION")"
+  fi
   if [[ -f "${INSTALL_DIR}/.env" ]]; then
-    ls -l "${INSTALL_DIR}/.env"
-  else
-    echo "missing ${INSTALL_DIR}/.env"
+    grep -E '^(PGPANEL_VERSION|PGPANEL_IMAGE)=' "${INSTALL_DIR}/.env" 2>/dev/null || true
   fi
 }
 
 cmd_version() {
-  echo "Install dir: $INSTALL_DIR"
+  local local_v remote_v
+  local_v="unknown"
+  [[ -f "${INSTALL_DIR}/VERSION" ]] && local_v="$(tr -d ' \n' <"${INSTALL_DIR}/VERSION")"
+  remote_v="$(curl -fsSL --max-time 15 https://raw.githubusercontent.com/pgpanel/pgpanel/main/VERSION 2>/dev/null | tr -d ' \n' || echo unknown)"
+  echo "PgPanel"
+  echo "  Developer:     Dezső Benedek Péter"
+  echo "  Official repo: ${OFFICIAL_REPO}"
+  echo "  Install dir:   ${INSTALL_DIR}"
+  echo "  Local version: ${local_v}"
+  echo "  Remote main:   ${remote_v}"
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
-    echo "Git commit: $(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo n/a)"
-    echo "Git describe: $(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || echo n/a)"
+    echo "  Git commit:    $(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo n/a)"
   fi
-  if [[ -f "$CONF_FILE" ]]; then
-    grep -E '^(INSTALLER_VERSION|PANEL_DOMAIN|UPDATE_CHANNEL|PRODUCTION_READY)=' "$CONF_FILE" || true
+  if [[ -f "${INSTALL_DIR}/.env" ]]; then
+    grep -E '^(PGPANEL_IMAGE|PGPANEL_VERSION|PGPANEL_UPDATE_CHANNEL)=' "${INSTALL_DIR}/.env" 2>/dev/null || true
+  fi
+  if [[ "$local_v" != "unknown" && "$remote_v" != "unknown" && "$local_v" != "$remote_v" ]]; then
+    echo ""
+    echo "Update available: ${local_v} → ${remote_v}"
+    echo "Run:  sudo pgpanel update"
+  elif [[ "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
+    echo ""
+    echo "Up to date."
   fi
   docker --version 2>/dev/null || true
   docker compose version 2>/dev/null || true
@@ -105,8 +131,7 @@ cmd_env_check() {
   mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%OLp' "$f")"
   echo "path=$f mode=$mode"
   [[ "$mode" == "600" ]] || echo "WARNING: expected 0600"
-  # keys present without values
-  for k in PGPANEL_MASTER_KEY PGPANEL_BOOTSTRAP_TOKEN DATABASUS_INTERNAL_TOKEN; do
+  for k in PGPANEL_MASTER_KEY PGPANEL_BOOTSTRAP_TOKEN DATABASUS_INTERNAL_TOKEN PGPANEL_IMAGE; do
     if grep -q "^${k}=" "$f"; then
       echo "present: $k"
     else
@@ -120,19 +145,19 @@ main() {
   local cmd="${1:-}"
   case "$cmd" in
     status) cmd_status ;;
-    start) need_root "$@"; compose up -d ;;
+    start) need_root "$@"; compose up -d --remove-orphans ;;
     stop) need_root "$@"; compose stop ;;
     restart) need_root "$@"; compose restart ;;
     logs) shift; compose logs -f --tail=200 "$@" ;;
     update) need_root "$@"; exec bash "$INSTALLER" --mode update ;;
+    version|version-check) cmd_version ;;
     repair) need_root "$@"; exec bash "$INSTALLER" --mode repair ;;
     configure) need_root "$@"; exec bash "$INSTALLER" --mode configure ;;
     backup-test) need_root "$@"; exec bash "$INSTALLER" --mode backup-test ;;
     security-check) need_root "$@"; exec bash "$INSTALLER" --mode security ;;
     uninstall) need_root "$@"; exec bash "$INSTALLER" --mode uninstall ;;
-    version) cmd_version ;;
     env-check) cmd_env_check ;;
-    -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 0; exit 0 ;;
+    -h|--help|help|"") usage; exit 0 ;;
     *) echo "Unknown command: $cmd" >&2; usage; exit 1 ;;
   esac
 }

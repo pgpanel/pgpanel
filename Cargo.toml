@@ -14,8 +14,8 @@ default-members = ["crates/pgpanel-api"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["PgPanel Contributors"]
-repository = "https://github.com/example/pgpanel"
+authors = ["Dezső Benedek Péter"]
+repository = "https://github.com/pgpanel/pgpanel"
 
 [workspace.dependencies]
 # Async runtime

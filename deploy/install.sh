@@ -17,7 +17,10 @@
 set -Eeuo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly INSTALLER_VERSION="1.0.0"
+readonly INSTALLER_VERSION="1.2.0"
+readonly PGPANEL_AUTHOR="Dezső Benedek Péter"
+readonly PGPANEL_OFFICIAL_REPO="https://github.com/pgpanel/pgpanel.git"
+readonly PGPANEL_GHCR_IMAGE="ghcr.io/pgpanel/pgpanel"
 readonly PGPANEL_DEFAULT_INSTALL_DIR="/opt/pgpanel"
 readonly PGPANEL_DEFAULT_DATA_DIR="/var/lib/pgpanel"
 readonly PGPANEL_DEFAULT_LOG_DIR="/var/log/pgpanel"
@@ -50,9 +53,13 @@ DATA_DIR="${PGPANEL_DEFAULT_DATA_DIR}"
 CLUSTER_DATA_DIR="${PGPANEL_DEFAULT_DATA_DIR}/clusters"
 LOG_DIR="${PGPANEL_DEFAULT_LOG_DIR}"
 BACKUP_CACHE_DIR="${PGPANEL_DEFAULT_DATA_DIR}/backups"
-REPO_URL=""
+REPO_URL="${PGPANEL_OFFICIAL_REPO}"
 GIT_REF="main"
 UPDATE_CHANNEL="stable"
+PGPANEL_VERSION="0.1.0"
+PGPANEL_IMAGE=""
+PGPANEL_BUILD_LOCAL=0
+FORCE_UPDATE=0
 USE_DOMAIN=1
 PANEL_DOMAIN="db.example.com"
 DATABASUS_DOMAIN="backup.db.example.com"
@@ -201,6 +208,66 @@ ensure_root() {
   fi
 }
 
+# When launched as `curl | bash`, stdin is the pipe (not the keyboard).
+# Rebind stdin to the controlling terminal so menus/prompts work.
+ensure_interactive_stdin() {
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    return 0
+  fi
+  if [[ -r /dev/tty ]]; then
+    # shellcheck disable=SC2094
+    exec </dev/tty || die "Cannot open /dev/tty for interactive input"
+    log_info "Interactive input attached via /dev/tty (safe for curl|bash)"
+    return 0
+  fi
+  # No TTY available
+  if [[ -n "$CLI_MODE" && "$CLI_MODE" != "configure" && "$CLI_MODE" != "uninstall" ]]; then
+    NON_INTERACTIVE=1
+    log_warn "No TTY; mode=${CLI_MODE} will use defaults (non-interactive)"
+    return 0
+  fi
+  die "No interactive terminal.
+
+curl|bash needs a real TTY. Prefer:
+
+  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh -o /tmp/ip.sh
+  sudo bash /tmp/ip.sh
+
+Or after clone:
+
+  sudo bash /opt/pgpanel/deploy/install.sh
+  sudo bash /opt/pgpanel/deploy/install.sh --mode install"
+}
+
+# Read a line from the user; fails cleanly on EOF (no infinite empty loops).
+read_user() {
+  # usage: read_user [-s] "prompt" -> sets REPLY
+  local silent=0
+  if [[ "${1:-}" == "-s" ]]; then
+    silent=1
+    shift
+  fi
+  local prompt="${1:-}"
+  REPLY=""
+  if [[ $silent -eq 1 ]]; then
+    if ! read -r -s -p "$prompt" REPLY; then
+      printf '\n'
+      return 1
+    fi
+    printf '\n'
+  else
+    if ! read -r -p "$prompt" REPLY; then
+      return 1
+    fi
+  fi
+  # Strip CR (Windows paste) and outer whitespace
+  REPLY="$(printf '%s' "$REPLY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  return 0
+}
+
 confirm() {
   local prompt="${1:-Continue?}" default="${2:-N}"
   local def_up ans ans_low
@@ -210,11 +277,13 @@ confirm() {
     return
   fi
   if [[ "$def_up" == "Y" ]]; then
-    read -r -p "${prompt} [Y/n] " ans || true
+    read_user "${prompt} [Y/n] " || return 1
+    ans="${REPLY}"
     ans_low="$(printf '%s' "${ans:-y}" | tr '[:upper:]' '[:lower:]')"
     [[ -z "$ans" || "$ans_low" == "y" || "$ans_low" == "yes" ]]
   else
-    read -r -p "${prompt} [y/N] " ans || true
+    read_user "${prompt} [y/N] " || return 1
+    ans="${REPLY}"
     ans_low="$(printf '%s' "${ans:-n}" | tr '[:upper:]' '[:lower:]')"
     [[ "$ans_low" == "y" || "$ans_low" == "yes" ]]
   fi
@@ -231,10 +300,12 @@ prompt_val() {
     return 0
   fi
   if [[ -n "$__default" ]]; then
-    read -r -p "${__label} [${__default}]: " __input || true
+    read_user "${__label} [${__default}]: " || die "Input closed while reading ${__label}"
+    __input="${REPLY}"
     printf -v "$__var" '%s' "${__input:-$__default}"
   else
-    read -r -p "${__label}: " __input || true
+    read_user "${__label}: " || die "Input closed while reading ${__label}"
+    __input="${REPLY}"
     printf -v "$__var" '%s' "$__input"
   fi
 }
@@ -247,8 +318,8 @@ prompt_secret() {
     return 0
   fi
   while true; do
-    read -r -s -p "${__label}: " __input || true
-    printf '\n'
+    read_user -s "${__label}: " || die "Input closed while reading secret"
+    __input="${REPLY}"
     if [[ -n "$__input" || "$__allow_empty" -eq 1 ]]; then
       printf -v "$__var" '%s' "$__input"
       return 0
@@ -262,7 +333,9 @@ prompt_yesno() {
   local __var="$1" __label="$2" __def="${3:-n}"
   if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
     if [[ -z "${!__var:-}" ]]; then
-      if [[ "${__def,,}" == "y" ]]; then printf -v "$__var" '1'; else printf -v "$__var" '0'; fi
+      local __def_low
+      __def_low="$(printf '%s' "$__def" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$__def_low" == "y" ]]; then printf -v "$__var" '1'; else printf -v "$__var" '0'; fi
     fi
     return 0
   fi
@@ -270,8 +343,8 @@ prompt_yesno() {
   local def_low ans_low
   def_low="$(printf '%s' "$__def" | tr '[:upper:]' '[:lower:]')"
   if [[ "$def_low" == "y" ]]; then hint="Y/n"; else hint="y/N"; fi
-  read -r -p "${__label} [${hint}]: " ans || true
-  ans="${ans:-$__def}"
+  read_user "${__label} [${hint}]: " || die "Input closed while reading ${__label}"
+  ans="${REPLY:-$__def}"
   ans_low="$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')"
   if [[ "$ans_low" == "y" || "$ans_low" == "yes" ]]; then
     printf -v "$__var" '1'
@@ -724,58 +797,114 @@ create_directories() {
   log_ok "Directories ready"
 }
 
-# ── Repository ───────────────────────────────────────────────────────────────
-clone_or_update_repo() {
-  log_step 5 15 "Repository klónozása / frissítése"
+# ── Version helpers ──────────────────────────────────────────────────────────
+read_version_file() {
+  local f="$1"
+  if [[ -f "$f" ]]; then
+    tr -d ' \n\r' <"$f"
+  else
+    echo "unknown"
+  fi
+}
 
-  # Prefer copying from current tree if we are already inside a checkout
-  if [[ -f "${REPO_ROOT}/Cargo.toml" && -d "${REPO_ROOT}/deploy" && -z "${REPO_URL}" ]]; then
+get_local_version() {
+  if [[ -f "${INSTALL_DIR}/VERSION" ]]; then
+    read_version_file "${INSTALL_DIR}/VERSION"
+  elif [[ -f "${REPO_ROOT}/VERSION" ]]; then
+    read_version_file "${REPO_ROOT}/VERSION"
+  else
+    echo "${PGPANEL_VERSION:-unknown}"
+  fi
+}
+
+get_remote_version() {
+  # Prefer VERSION on selected ref (stable → main or latest release tag)
+  local ref="${1:-$GIT_REF}"
+  local url="https://raw.githubusercontent.com/pgpanel/pgpanel/${ref}/VERSION"
+  local v
+  v="$(timeout_cmd "$NETWORK_TIMEOUT" curl -fsSL "$url" 2>/dev/null | tr -d ' \n\r' || true)"
+  if [[ -n "$v" ]]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  # Fallback: latest GitHub release tag
+  v="$(timeout_cmd "$NETWORK_TIMEOUT" curl -fsSL https://api.github.com/repos/pgpanel/pgpanel/releases/latest 2>/dev/null \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/^v//')"
+  if [[ -n "$v" ]]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  printf 'unknown'
+}
+
+resolve_panel_image() {
+  PGPANEL_VERSION="$(get_local_version)"
+  if [[ -z "$PGPANEL_IMAGE" ]]; then
+    if [[ "$UPDATE_CHANNEL" == "edge" ]]; then
+      PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:latest"
+    else
+      PGPANEL_IMAGE="${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}"
+    fi
+  fi
+}
+
+show_version_status() {
+  local local_v remote_v
+  local_v="$(get_local_version)"
+  remote_v="$(get_remote_version "$GIT_REF")"
+  PGPANEL_VERSION="$local_v"
+  resolve_panel_image
+  echo ""
+  echo "${C_BOLD}Version status${C_RESET}"
+  echo "  Installed (tree):  ${local_v}"
+  echo "  Remote (${GIT_REF}): ${remote_v}"
+  echo "  Panel image:       ${PGPANEL_IMAGE}"
+  echo "  Channel:           ${UPDATE_CHANNEL}"
+  echo "  Installer:         ${INSTALLER_VERSION}"
+  echo "  Developer:         ${PGPANEL_AUTHOR}"
+  if [[ "$local_v" != "unknown" && "$remote_v" != "unknown" && "$local_v" != "$remote_v" ]]; then
+    log_warn "Update available: ${local_v} → ${remote_v}"
+    return 0
+  elif [[ "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
+    log_ok "Already on latest known version (${local_v})"
+    return 1
+  fi
+  return 0
+}
+
+# ── Repository (official only — never asked) ─────────────────────────────────
+clone_or_update_repo() {
+  log_step 5 15 "Hivatalos repository szinkronizálása"
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
+
+  # Prefer syncing from current tree if we are already inside this checkout
+  if [[ -f "${REPO_ROOT}/Cargo.toml" && -d "${REPO_ROOT}/deploy" && -f "${REPO_ROOT}/VERSION" ]]; then
     if [[ "$REPO_ROOT" != "$INSTALL_DIR" ]]; then
-      log_info "Syncing local repository ${REPO_ROOT} → ${INSTALL_DIR}"
+      log_info "Syncing ${REPO_ROOT} → ${INSTALL_DIR}"
       mkdir -p "$INSTALL_DIR"
-      # rsync if available, else tar
       if have_cmd rsync; then
         rsync -a --delete \
           --exclude '.git' \
           --exclude 'target' \
           --exclude 'frontend/node_modules' \
           --exclude 'frontend/.svelte-kit' \
+          --exclude 'frontend/build' \
           --exclude 'data' \
           --exclude '.env' \
           "${REPO_ROOT}/" "${INSTALL_DIR}/"
       else
         tar -C "$REPO_ROOT" \
           --exclude='.git' --exclude='target' --exclude='frontend/node_modules' \
-          --exclude='frontend/.svelte-kit' --exclude='data' --exclude='.env' \
+          --exclude='frontend/.svelte-kit' --exclude='frontend/build' \
+          --exclude='data' --exclude='.env' \
           -cf - . | tar -C "$INSTALL_DIR" -xf -
       fi
     else
       log_info "Already running from install directory"
     fi
-    if [[ -d "${INSTALL_DIR}/.git" ]]; then
-      log_info "Commit: $(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo n/a)"
-    fi
-    log_ok "Repository ready"
-    return 0
   fi
 
-  if [[ -z "$REPO_URL" ]]; then
-    if [[ -f "${REPO_ROOT}/Cargo.toml" ]]; then
-      REPO_URL=""
-      # fall through handled above; if INSTALL_DIR different we already returned
-      if [[ ! -f "${INSTALL_DIR}/Cargo.toml" ]]; then
-        die "No REPO_URL set and local tree not usable"
-      fi
-      log_ok "Using existing ${INSTALL_DIR}"
-      return 0
-    fi
-    die "Git repository URL is required when not installing from a local checkout"
-  fi
-
-  # Mask tokens in URL for logs
-  local safe_url
-  safe_url="$(printf '%s' "$REPO_URL" | sed -E 's|://[^/@]*@|://***@|')"
-  log_info "Repository: ${safe_url} ref=${GIT_REF}"
+  mkdir -p "$(dirname "$INSTALL_DIR")"
 
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" 2>/dev/null || true
@@ -785,28 +914,49 @@ clone_or_update_repo() {
       git -C "$INSTALL_DIR" merge --ff-only "origin/${GIT_REF}" || true
     elif git -C "$INSTALL_DIR" rev-parse --verify "refs/tags/${GIT_REF}" >/dev/null 2>&1; then
       git -C "$INSTALL_DIR" checkout "tags/${GIT_REF}"
+    elif git -C "$INSTALL_DIR" rev-parse --verify "refs/tags/v${GIT_REF}" >/dev/null 2>&1; then
+      git -C "$INSTALL_DIR" checkout "tags/v${GIT_REF}"
     else
-      die "Git ref not found: ${GIT_REF}"
+      log_warn "Ref ${GIT_REF} not found after fetch — keeping current checkout"
     fi
+  elif [[ ! -f "${INSTALL_DIR}/deploy/install.sh" ]]; then
+    log_info "Cloning ${REPO_URL} (${GIT_REF}) → ${INSTALL_DIR}"
+    git clone --branch "$GIT_REF" --single-branch "$REPO_URL" "$INSTALL_DIR" \
+      || git clone "$REPO_URL" "$INSTALL_DIR" \
+      || die "git clone failed"
+    git -C "$INSTALL_DIR" checkout "$GIT_REF" 2>/dev/null || true
   else
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    if [[ -d "$INSTALL_DIR" && ! -d "${INSTALL_DIR}/.git" ]]; then
-      log_warn "${INSTALL_DIR} exists without .git — using as install root"
-    else
-      git clone --branch "$GIT_REF" --single-branch "$REPO_URL" "$INSTALL_DIR" \
-        || git clone "$REPO_URL" "$INSTALL_DIR"
-      git -C "$INSTALL_DIR" checkout "$GIT_REF" || true
-    fi
+    log_info "Using existing tree at ${INSTALL_DIR}"
   fi
 
-  log_info "Installed commit: $(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  PGPANEL_VERSION="$(get_local_version)"
+  resolve_panel_image
+  log_info "Version ${PGPANEL_VERSION} · commit $(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+  log_info "Panel image ${PGPANEL_IMAGE}"
   log_ok "Repository ready"
 }
 
 # ── Secrets / env ────────────────────────────────────────────────────────────
+upsert_env_key() {
+  local file="$1" key="$2" val="$3"
+  [[ -f "$file" ]] || return 0
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    awk -v k="$key" -v v="$val" 'BEGIN{FS=OFS="="} $1==k {$0=k"="v} {print}' "$file" >"$tmp"
+    mv -f "$tmp" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >>"$file"
+  fi
+  chmod 0600 "$file"
+  chown root:root "$file" 2>/dev/null || true
+}
+
 generate_or_load_secrets() {
   log_step 6 15 "Titkok generálása"
   local env_file="${INSTALL_DIR}/.env"
+
+  resolve_panel_image
 
   if [[ -f "$env_file" ]]; then
     log_ok "Existing .env found — secrets will NOT be regenerated"
@@ -817,6 +967,10 @@ generate_or_load_secrets() {
     # shellcheck disable=SC1090
     source "$env_file"
     set +a
+    # Refresh non-secret image/version pins for pull-based updates
+    upsert_env_key "$env_file" "PGPANEL_VERSION" "$PGPANEL_VERSION"
+    upsert_env_key "$env_file" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
+    upsert_env_key "$env_file" "PGPANEL_HOST_DATA" "$DATA_DIR"
     return 0
   fi
 
@@ -868,6 +1022,10 @@ PGPANEL_LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS}
 PGPANEL_DOMAIN=${PANEL_DOMAIN}
 CADDY_EMAIL=${LETSENCRYPT_EMAIL}
 PGPANEL_UPDATE_CHANNEL=${UPDATE_CHANNEL}
+PGPANEL_VERSION=${PGPANEL_VERSION}
+PGPANEL_IMAGE=${PGPANEL_IMAGE}
+PGPANEL_HOST_DATA=${DATA_DIR}
+PGPANEL_PULL_POLICY=always
 
 # Defaults for cluster creation (consumed by panel / docs)
 PGPANEL_DEFAULT_PG_VERSION=${PG_DEFAULT_VERSION}
@@ -958,9 +1116,12 @@ DATA_DIR=${DATA_DIR}
 CLUSTER_DATA_DIR=${CLUSTER_DATA_DIR}
 LOG_DIR=${LOG_DIR}
 BACKUP_CACHE_DIR=${BACKUP_CACHE_DIR}
-REPO_URL=${REPO_URL}
+REPO_URL=${PGPANEL_OFFICIAL_REPO}
 GIT_REF=${GIT_REF}
 UPDATE_CHANNEL=${UPDATE_CHANNEL}
+PGPANEL_VERSION=${PGPANEL_VERSION}
+PGPANEL_IMAGE=${PGPANEL_IMAGE}
+PGPANEL_BUILD_LOCAL=${PGPANEL_BUILD_LOCAL}
 
 USE_DOMAIN=${USE_DOMAIN}
 PANEL_DOMAIN=${PANEL_DOMAIN}
@@ -1028,6 +1189,7 @@ load_installer_conf() {
 render_compose() {
   local dest="${INSTALL_DIR}/deploy/compose.yml"
   mkdir -p "${INSTALL_DIR}/deploy"
+  resolve_panel_image
 
   local databasus_networks="      - pgpanel_internal"
   if [[ "$DATABASUS_PUBLIC" -eq 1 ]]; then
@@ -1095,9 +1257,9 @@ services:
       - NET_BIND_SERVICE
 
   panel:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    # Pre-built image — VPS does not compile Rust/frontend unless PGPANEL_BUILD_LOCAL=1
+    image: \${PGPANEL_IMAGE:-${PGPANEL_GHCR_IMAGE}:${PGPANEL_VERSION}}
+    pull_policy: \${PGPANEL_PULL_POLICY:-always}
     restart: unless-stopped
     env_file:
       - ../.env
@@ -1263,22 +1425,38 @@ EOF
 }
 
 # ── Docker networks ──────────────────────────────────────────────────────────
-ensure_docker_networks() {
-  log_step 8 15 "Docker hálózatok"
+# Compose must own these networks (labels com.docker.compose.*).
+# Do NOT pre-create them with plain `docker network create` — that causes:
+#   network X was found but has incorrect label com.docker.compose.network
+prepare_compose_networks() {
   local nets=(pgpanel_frontend pgpanel_internal pgpanel_database_management)
-  local n
+  local n label
   for n in "${nets[@]}"; do
-    if docker network inspect "$n" >/dev/null 2>&1; then
-      log_info "Network exists: $n"
+    if ! docker network inspect "$n" >/dev/null 2>&1; then
+      continue
+    fi
+    label="$(docker network inspect -f '{{index .Labels "com.docker.compose.network"}}' "$n" 2>/dev/null || true)"
+    if [[ -z "$label" || "$label" == "<no value>" ]]; then
+      log_warn "Removing unlabeled network '$n' so Compose can recreate it"
+      # Detach any leftover containers first (best-effort)
+      docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$n" 2>/dev/null \
+        | tr ' ' '\n' | while read -r c; do
+            [[ -z "$c" ]] && continue
+            docker network disconnect -f "$n" "$c" 2>/dev/null || true
+          done
+      docker network rm "$n" 2>/dev/null \
+        || log_warn "Could not remove network $n (in use?) — run: docker compose -f ${INSTALL_DIR}/deploy/compose.yml down"
     else
-      if [[ "$n" == "pgpanel_database_management" ]]; then
-        docker network create --internal "$n" >/dev/null
-      else
-        docker network create "$n" >/dev/null
-      fi
-      log_ok "Created network: $n"
+      log_info "Compose network OK: $n"
     fi
   done
+}
+
+ensure_docker_networks() {
+  log_step 8 15 "Docker hálózatok"
+  log_info "Networks are managed by Docker Compose (not pre-created)"
+  prepare_compose_networks
+  log_ok "Network prep done"
 }
 
 # ── UFW ──────────────────────────────────────────────────────────────────────
@@ -1385,17 +1563,50 @@ EOF
 
 # ── Build & start ────────────────────────────────────────────────────────────
 build_and_start() {
-  log_step 11 15 "Docker image-ek buildelése"
+  log_step 11 15 "Docker image-ek letöltése (előre fordított panel)"
   log_step 12 15 "Szolgáltatások indítása"
   INSTALL_PHASE="compose_up"
+  resolve_panel_image
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_HOST_DATA" "$DATA_DIR"
+
+  prepare_compose_networks
 
   (
     cd "${INSTALL_DIR}/deploy"
+    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR"
+    # shellcheck disable=SC1091
+    set -a
+    # shellcheck source=/dev/null
+    source "${INSTALL_DIR}/.env"
+    set +a
     docker compose -f compose.yml config >/dev/null
-    docker compose -f compose.yml build --pull
-    docker compose -f compose.yml up -d
+
+    # Clear partial compose state without deleting named volumes / data
+    docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
+    prepare_compose_networks
+
+    if [[ "${PGPANEL_BUILD_LOCAL}" -eq 1 ]]; then
+      log_warn "PGPANEL_BUILD_LOCAL=1 — building on this host (slow)"
+      docker compose -f compose.yml build --pull
+    else
+      log_info "Pulling pre-built images (no cargo/npm on VPS)…"
+      if ! docker compose -f compose.yml pull; then
+        log_warn "Image pull failed — falling back to local build (requires time + RAM)"
+        docker compose -f compose.yml build --pull
+      fi
+    fi
+    # Never use -v: data volumes must survive restarts/updates
+    if ! docker compose -f compose.yml up -d --remove-orphans; then
+      log_error "compose up failed — retrying after network cleanup"
+      prepare_compose_networks
+      docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
+      prepare_compose_networks
+      docker compose -f compose.yml up -d --remove-orphans
+    fi
   )
-  log_ok "Services started"
+  log_ok "Services started (data volumes preserved)"
 }
 
 # ── Health checks ────────────────────────────────────────────────────────────
@@ -1558,7 +1769,7 @@ storage_test_menu() {
     echo "2) Storage kihagyása"
     echo "3) Telepítés megszakítása"
     local c
-    read -r -p "Választás [1-3]: " c || true
+    read_user "Választás [1-3]: " || die "Input closed"; c="${REPLY}"
     case "$c" in
       1) prompt_backup_storage ;;
       2) BACKUP_STORAGE_TYPE="later"; return 0 ;;
@@ -1698,6 +1909,8 @@ EOF
 prompt_base_settings() {
   echo ""
   echo "${C_BOLD}=== Alapbeállítások ===${C_RESET}"
+  log_info "Hivatalos forrás: ${PGPANEL_OFFICIAL_REPO} (nem kérhető / nem módosítható a telepítőben)"
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
   prompt_val INSTALL_DIR "Telepítési könyvtár" "$INSTALL_DIR"
   prompt_val DATA_DIR "Adatkönyvtár" "$DATA_DIR"
   CLUSTER_DATA_DIR="${DATA_DIR}/clusters"
@@ -1705,15 +1918,21 @@ prompt_base_settings() {
   prompt_val LOG_DIR "Logkönyvtár" "$LOG_DIR"
   BACKUP_CACHE_DIR="${DATA_DIR}/backups"
   prompt_val BACKUP_CACHE_DIR "Backup cache könyvtár" "$BACKUP_CACHE_DIR"
-  prompt_val REPO_URL "Git repository URL (üres = helyi tree)" "${REPO_URL}"
-  prompt_val GIT_REF "Git branch vagy tag" "$GIT_REF"
-  echo "Frissítési csatorna: 1) stable  2) edge"
+  echo "Frissítési csatorna: 1) stable (verziózott image)  2) edge (latest)"
   local ch
-  read -r -p "Választás [1]: " ch || true
+  read_user "Választás [1]: " || die "Input closed"; ch="${REPLY}"
   case "${ch:-1}" in
-    2) UPDATE_CHANNEL="edge" ;;
-    *) UPDATE_CHANNEL="stable" ;;
+    2)
+      UPDATE_CHANNEL="edge"
+      GIT_REF="main"
+      ;;
+    *)
+      UPDATE_CHANNEL="stable"
+      GIT_REF="main"
+      ;;
   esac
+  resolve_panel_image
+  log_info "Panel image: ${PGPANEL_IMAGE}"
 }
 
 prompt_network() {
@@ -1757,7 +1976,7 @@ prompt_admin() {
   prompt_val ADMIN_EMAIL "Admin e-mail" "$ADMIN_EMAIL"
   echo "Jelszó: 1) automatikus generálás  2) kézi megadás"
   local p
-  read -r -p "Választás [1]: " p || true
+  read_user "Választás [1]: " || die "Input closed"; p="${REPLY}"
   if [[ "${p:-1}" == "2" ]]; then
     prompt_secret ADMIN_PASSWORD "Admin jelszó (min. 16 karakter)"
     local confirm_pw
@@ -1778,7 +1997,7 @@ prompt_postgres_defaults() {
   echo "${C_BOLD}=== PostgreSQL alapbeállítások ===${C_RESET}"
   echo "Alapértelmezett verzió: 1) 16  2) 17  3) 18"
   local v
-  read -r -p "Választás [2]: " v || true
+  read_user "Választás [2]: " || die "Input closed"; v="${REPLY}"
   case "${v:-2}" in
     1) PG_DEFAULT_VERSION="16" ;;
     3) PG_DEFAULT_VERSION="18" ;;
@@ -1807,7 +2026,7 @@ prompt_backup_storage() {
 7) Később konfigurálom
 EOF
   local c
-  read -r -p "Választás [7]: " c || true
+  read_user "Választás [7]: " || die "Input closed"; c="${REPLY}"
   case "${c:-7}" in
     1) BACKUP_STORAGE_TYPE="s3" ;;
     2) BACKUP_STORAGE_TYPE="r2" ;;
@@ -1849,7 +2068,7 @@ prompt_databasus() {
   prompt_val DATABASUS_ADMIN_EMAIL "Databasus admin e-mail" "${ADMIN_EMAIL}"
   echo "Databasus jelszó: 1) auto  2) kézi"
   local p
-  read -r -p "Választás [1]: " p || true
+  read_user "Választás [1]: " || die "Input closed"; p="${REPLY}"
   if [[ "${p:-1}" == "2" ]]; then
     prompt_secret DATABASUS_ADMIN_PASSWORD "Databasus admin jelszó"
   fi
@@ -1868,7 +2087,7 @@ prompt_notifications() {
 6) Nincs
 EOF
   local c
-  read -r -p "Választás [6]: " c || true
+  read_user "Választás [6]: " || die "Input closed"; c="${REPLY}"
   case "${c:-6}" in
     1)
       NOTIFY_TYPE="smtp"
@@ -1977,12 +2196,31 @@ send_test_notification() {
   esac
 }
 
-# ── Update mode ──────────────────────────────────────────────────────────────
+# ── Update mode (no data loss) ───────────────────────────────────────────────
 do_update() {
   load_installer_conf
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
   LOG_FILE="${LOG_DIR}/installer.log"
   mkdir -p "$LOG_DIR"
-  log_info "Starting update…"
+  log_info "Starting production update (preserves data, secrets, volumes)…"
+
+  ensure_interactive_stdin
+
+  local local_v remote_v
+  local_v="$(get_local_version)"
+  remote_v="$(get_remote_version "$GIT_REF")"
+  show_version_status || true
+
+  if [[ "$FORCE_UPDATE" -ne 1 && "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
+    if ! confirm "Already on ${local_v}. Update anyway (re-pull images)?" "N"; then
+      log_info "Update cancelled"
+      return 0
+    fi
+  fi
+
+  if ! confirm "Continue update? PostgreSQL volumes, panel SQLite, .env secrets and Databasus data are kept." "Y"; then
+    die "Update aborted"
+  fi
 
   local backup_dir="${INSTALL_DIR}/backups/config/$(date +%Y%m%d%H%M%S)"
   mkdir -p "$backup_dir"
@@ -1991,34 +2229,84 @@ do_update() {
   if [[ -f "${DATA_DIR}/panel/panel.db" ]]; then
     cp -a "${DATA_DIR}/panel/panel.db" "$backup_dir/panel.db" || true
   fi
-  log_ok "Config backup → ${backup_dir}"
+  # Also backup WAL sidecar if present
+  if [[ -f "${DATA_DIR}/panel/panel.db-wal" ]]; then
+    cp -a "${DATA_DIR}/panel/panel.db-wal" "$backup_dir/" 2>/dev/null || true
+    cp -a "${DATA_DIR}/panel/panel.db-shm" "$backup_dir/" 2>/dev/null || true
+  fi
+  log_ok "Config + panel DB backup → ${backup_dir}"
 
   clone_or_update_repo
-  # NEVER regenerate secrets
   if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
-    die ".env missing — refuse to update without secrets. Restore from backup."
+    die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
   fi
+
+  # NEVER regenerate secrets / never docker compose down -v
+  generate_or_load_secrets
   render_caddyfile
   render_compose
-  (
-    cd "${INSTALL_DIR}/deploy"
-    docker compose pull || true
-    docker compose build
-    docker compose up -d
-  )
-  health_check || {
+  save_installer_conf
+
+  # Record previous version for rollback notes
+  printf '%s\n' "$local_v" >"${backup_dir}/previous-version.txt"
+  printf '%s\n' "$(get_local_version)" >"${backup_dir}/target-version.txt"
+
+  build_and_start
+  install_cli
+
+  if ! health_check; then
     log_error "Update health check failed — rollback available from ${backup_dir}"
-    if confirm "Rollback compose config from backup?" "Y"; then
+    if confirm "Restore previous .env and re-pull previous image?" "Y"; then
       cp -a "${backup_dir}/.env" "${INSTALL_DIR}/.env" 2>/dev/null || true
+      if [[ -f "${backup_dir}/panel.db" ]]; then
+        (
+          cd "${INSTALL_DIR}/deploy"
+          docker compose stop panel 2>/dev/null || true
+        )
+        cp -a "${backup_dir}/panel.db" "${DATA_DIR}/panel/panel.db" || true
+      fi
       (
         cd "${INSTALL_DIR}/deploy"
-        docker compose up -d
+        set -a
+        # shellcheck source=/dev/null
+        source "${INSTALL_DIR}/.env"
+        set +a
+        docker compose up -d --remove-orphans
       ) || true
+      log_warn "Rollback attempted. Check: pgpanel status"
     fi
     return 1
-  }
+  fi
+
   write_install_summary
+  cat <<EOF
+
+${C_GREEN}${C_BOLD}Update completed without data loss.${C_RESET}
+
+  Previous version: ${local_v}
+  Current version:  $(get_local_version)
+  Panel image:      ${PGPANEL_IMAGE}
+  Backup:           ${backup_dir}
+
+Preserved:
+  • /opt/pgpanel/.env secrets
+  • panel SQLite (${DATA_DIR}/panel)
+  • PostgreSQL Docker volumes
+  • Databasus data (${DATA_DIR}/databasus)
+
+EOF
   log_ok "Update completed"
+}
+
+do_version_check() {
+  load_installer_conf
+  REPO_URL="$PGPANEL_OFFICIAL_REPO"
+  show_version_status || true
+  echo ""
+  echo "Commands:"
+  echo "  pgpanel update          # safe upgrade"
+  echo "  pgpanel version         # show installed versions"
+  echo "  pgpanel status          # runtime health"
 }
 
 # ── Repair mode ──────────────────────────────────────────────────────────────
@@ -2236,7 +2524,7 @@ do_uninstall() {
 5) Mégse
 EOF
   local c
-  read -r -p "Választás [5]: " c || true
+  read_user "Választás [5]: " || die "Input closed"; c="${REPLY}"
   case "${c:-5}" in
     1)
       (
@@ -2263,7 +2551,7 @@ EOF
       echo "This DESTROYS PostgreSQL data volumes managed by PgPanel."
       echo "External S3 backups are NOT deleted."
       local confirm1
-      read -r -p "Type DELETE ALL DATA to continue: " confirm1 || true
+      read_user "Type DELETE ALL DATA to continue: " || die "Input closed"; confirm1="${REPLY}"
       [[ "$confirm1" == "DELETE ALL DATA" ]] || die "Aborted"
       if ! confirm "Second confirmation: destroy all local PostgreSQL volumes?" "N"; then
         die "Aborted"
@@ -2298,6 +2586,8 @@ ${C_CYAN}${C_BOLD}
  |_|   \__, ||_|   \__,_|_| |_|\___|_|
        |___/  Installer v${INSTALLER_VERSION}
 ${C_RESET}
+  Developer: ${PGPANEL_AUTHOR}
+  Source:    ${PGPANEL_OFFICIAL_REPO}
 EOF
 }
 
@@ -2315,37 +2605,63 @@ main_menu() {
       configure) do_configure ;;
       security) do_security_check ;;
       backup-test) do_backup_test ;;
+      version|version-check) do_version_check ;;
       uninstall) do_uninstall ;;
       *) die "Unknown mode: $CLI_MODE" ;;
     esac
     return 0
   fi
 
+  local bad_inputs=0
   while true; do
     echo ""
     echo "${C_BOLD}PgPanel Installer${C_RESET}"
+    echo "  Fejlesztő: ${PGPANEL_AUTHOR}"
+    local lv rv
+    lv="$(get_local_version 2>/dev/null || echo '?')"
+    rv="$(get_remote_version main 2>/dev/null || echo '?')"
+    echo "  Telepített verzió: ${lv}  ·  Elérhető: ${rv}"
     echo ""
     echo "1. Új telepítés"
-    echo "2. Meglévő telepítés frissítése"
+    echo "2. Frissítés új verzióra (adatok megmaradnak)"
     echo "3. Telepítés javítása"
     echo "4. Konfiguráció módosítása"
     echo "5. Biztonsági ellenőrzés"
-    echo "6. Backup-integráció tesztelése"
-    echo "7. Teljes rendszer eltávolítása"
-    echo "8. Kilépés"
+    echo "6. Verzió ellenőrzése"
+    echo "7. Backup-integráció tesztelése"
+    echo "8. Teljes rendszer eltávolítása"
+    echo "9. Kilépés"
     echo ""
     local choice
-    read -r -p "Választás [1-8]: " choice || true
-    case "${choice:-}" in
+    if ! read_user "Választás [1-9]: "; then
+      die "Menu input closed (EOF). Use an interactive SSH session, or:
+  sudo bash /opt/pgpanel/deploy/install.sh --mode install"
+    fi
+    choice="${REPLY}"
+    case "${choice}" in
       1) do_fresh_install; break ;;
       2) do_update; break ;;
       3) do_repair; break ;;
       4) do_configure; break ;;
       5) do_security_check ;;
-      6) do_backup_test ;;
-      7) do_uninstall; break ;;
-      8) exit 0 ;;
-      *) log_warn "Invalid choice" ;;
+      6) do_version_check ;;
+      7) do_backup_test ;;
+      8) do_uninstall; break ;;
+      9) exit 0 ;;
+      *)
+        bad_inputs=$((bad_inputs + 1))
+        if [[ -z "$choice" ]]; then
+          log_warn "Empty choice (${bad_inputs}/5) — type a number 1-9"
+        else
+          log_warn "Invalid choice: '${choice}' (${bad_inputs}/5)"
+        fi
+        if (( bad_inputs >= 5 )); then
+          die "Too many invalid/empty menu inputs — aborting.
+  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh -o /tmp/ip.sh
+  sudo bash /tmp/ip.sh
+Or: sudo bash /opt/pgpanel/deploy/install.sh --mode update"
+        fi
+        ;;
     esac
   done
 }
@@ -2358,15 +2674,23 @@ parse_args() {
       --mode) CLI_MODE="$2"; shift 2 ;;
       --mode=*) CLI_MODE="${1#*=}"; shift ;;
       --install-dir) INSTALL_DIR="$2"; shift 2 ;;
+      --force-update) FORCE_UPDATE=1; shift ;;
+      --build-local) PGPANEL_BUILD_LOCAL=1; shift ;;
       --help|-h)
-        cat <<'EOF'
-PgPanel installer
+        cat <<EOF
+PgPanel installer v${INSTALLER_VERSION}
+Developer: ${PGPANEL_AUTHOR}
 
 Usage:
-  sudo bash deploy/install.sh
-  sudo bash deploy/install.sh --mode install|update|repair|configure|security|backup-test|uninstall
-  sudo bash deploy/install.sh --non-interactive
+  curl -sSL https://raw.githubusercontent.com/pgpanel/pgpanel/main/install-pgpanel.sh | sudo bash
 
+  sudo bash deploy/install.sh
+  sudo bash deploy/install.sh --mode install|update|repair|configure|security|version|uninstall
+  sudo bash deploy/install.sh --mode update --force-update
+  sudo bash deploy/install.sh --build-local   # only if pre-built image unavailable
+
+Official repo is fixed: ${PGPANEL_OFFICIAL_REPO}
+Pre-built image: ${PGPANEL_GHCR_IMAGE}:<version>
 EOF
         exit 0
         ;;
@@ -2384,6 +2708,7 @@ fi
 main() {
   parse_args "$@"
   ensure_root "$@"
+  ensure_interactive_stdin
   TMPDIR_INSTALL="$(mktemp -d /tmp/pgpanel-install.XXXXXX)"
   chmod 700 "$TMPDIR_INSTALL"
 
