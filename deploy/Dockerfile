@@ -11,13 +11,26 @@ RUN npm run build
 # ── Rust build ────────────────────────────────────────────────────────────
 FROM rust:1-bookworm AS backend
 WORKDIR /src
+
+# pg_query needs protoc + rustfmt (prost codegen); clang for bindgen
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libclang-dev clang cmake build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    pkg-config \
+    libclang-dev \
+    clang \
+    cmake \
+    build-essential \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt \
+    && protoc --version \
+    && rustfmt --version
+
+ENV PROTOC=/usr/bin/protoc
 
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY migrations ./migrations
+COPY VERSION ./VERSION
 
 # Build release binary
 RUN cargo build --release -p pgpanel-api
