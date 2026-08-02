@@ -393,20 +393,39 @@ impl DockerClient {
         })
     }
 
-    /// Connect panel's own container network to a cluster network so the API
-    /// can reach PostgreSQL on the private network. Best-effort.
+    /// Attach a container to an additional Docker network (dual-homing).
+    ///
+    /// Used so PG clusters (on a private per-cluster network) also join
+    /// `pgpanel_database_management`, where the panel and Databasus resolve
+    /// them by container name. Already-connected is treated as success.
     pub async fn connect_network(&self, network_name: &str, container_name: &str) -> Result<()> {
         use bollard::models::EndpointSettings;
         use bollard::network::ConnectNetworkOptions;
 
+        info!(%network_name, %container_name, "connecting container to network");
         let config = ConnectNetworkOptions {
             container: container_name,
-            endpoint_config: EndpointSettings::default(),
+            endpoint_config: EndpointSettings {
+                aliases: Some(vec![container_name.to_string()]),
+                ..Default::default()
+            },
         };
-        self.docker
-            .connect_network(network_name, config)
-            .await
-            .map_err(|e| Error::Docker(format!("connect network: {e}")))?;
-        Ok(())
+        match self.docker.connect_network(network_name, config).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                // Idempotent: already on network
+                if msg.contains("already exists")
+                    || msg.contains("already connected")
+                    || msg.contains("endpoint with name")
+                {
+                    info!(%network_name, %container_name, "container already on network");
+                    return Ok(());
+                }
+                Err(Error::Docker(format!(
+                    "connect {container_name} to {network_name}: {e}"
+                )))
+            }
+        }
     }
 }

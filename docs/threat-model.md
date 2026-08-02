@@ -24,8 +24,10 @@ Internet
 ```
 
 - Caddy is the only public listener.
-- Panel talks to PostgreSQL on private Docker networks (or optional published ports).
-- Databasus must not receive the Docker socket.
+- Panel talks to PostgreSQL on the shared management network (`pgpanel_database_management`)
+  where clusters are dual-homed as `pgpanel_pg_<slug>` (optional published ports only if opted in).
+- Databasus is internal by default (no public domain); must not receive the Docker socket.
+- Databasus auto-provisioning HTTP API is **off** by default (`DATABASUS_HTTP_API=0`); manual UI setup.
 
 ## Adversaries
 
@@ -62,5 +64,6 @@ Internet
 See SECURITY.md table. Highest priority follow-ups:
 
 1. Split Docker provisioner from HTTP API.
-2. Verify Databasus API against a pinned version; integration tests for backup/restore.
+2. Only enable `DATABASUS_HTTP_API=1` after verifying paths against a pinned Databasus version;
+   integration tests for backup/restore.
 3. Optional: rootless Docker + user namespace remapping.

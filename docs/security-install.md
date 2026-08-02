@@ -32,12 +32,20 @@ Installer `security-check` verifies Databasus does not mount the socket and flag
 
 ## Network exposure
 
-| Port | Default |
-|------|---------|
-| 80/443 | public via Caddy only |
+| Port / surface | Default |
+|----------------|---------|
+| 80/443 | public via Caddy only (panel domain) |
 | 8080 panel | internal Docker network |
-| 8000 Databasus | internal (optional public subdomain) |
-| 5432 PostgreSQL | **not** opened by installer |
+| 8000 Databasus | **internal only** (`http://databasus:8000`); public subdomain only if installer `DATABASUS_PUBLIC=1` |
+| 5432 PostgreSQL | **not** opened; no public PG domain. Clusters dual-home: private `pgpanel_net_*` + shared `pgpanel_database_management` |
+
+Docker networks:
+
+| Network | Purpose | External |
+|---------|---------|----------|
+| `pgpanel_frontend` | Caddy ↔ panel | yes (edge) |
+| `pgpanel_internal` | panel ↔ Databasus | stack-local |
+| `pgpanel_database_management` | panel + Databasus ↔ `pgpanel_pg_*` DNS | **internal: true** |
 
 UFW order: **SSH first**, then 80/443, then enable. PostgreSQL is not globally allowed.
 

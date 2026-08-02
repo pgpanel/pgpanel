@@ -106,13 +106,20 @@ impl ClusterProvisioner {
 
         // 4. Container
         if self.docker.container_exists(&names.container_name).await? {
-            // Idempotent: inspect existing
+            // Idempotent: inspect existing and ensure management network
             let inspect = self.docker.inspect_container(&names.container_name).await?;
             resources.container_created = true;
             resources.container_id = Some(inspect.id);
             if inspect.running {
                 resources.container_started = true;
+            } else {
+                self.docker
+                    .start_container(&names.container_name)
+                    .await?;
+                resources.container_started = true;
             }
+            self.attach_management_network(&names.container_name)
+                .await?;
             return Ok((names, resources));
         }
 
@@ -142,7 +149,30 @@ impl ClusterProvisioner {
         self.docker.start_container(&container_id).await?;
         resources.container_started = true;
 
+        // 6. Dual-home onto management network so panel/Databasus resolve
+        //    internal_hostname (pgpanel_pg_<slug>) via Docker DNS.
+        self.attach_management_network(&names.container_name)
+            .await?;
+
         Ok((names, resources))
+    }
+
+    /// Attach cluster container to the shared management network (idempotent).
+    pub async fn attach_management_network(&self, container: &str) -> Result<()> {
+        let net = &self.config.management_network;
+        if net.is_empty() {
+            return Ok(());
+        }
+        if !self.docker.network_exists(net).await? {
+            // Compose should create this; create as internal fallback.
+            let mut labels = HashMap::new();
+            labels.insert("managed-by".into(), "pgpanel".into());
+            labels.insert("pgpanel.role".into(), "management".into());
+            self.docker.create_network(net, labels).await?;
+        }
+        self.docker.connect_network(net, container).await?;
+        info!(%container, network = %net, "cluster attached to management network");
+        Ok(())
     }
 
     pub async fn wait_healthy(&self, container: &str) -> Result<()> {
@@ -153,6 +183,10 @@ impl ClusterProvisioner {
 
     pub async fn start(&self, container: &str) -> Result<()> {
         self.docker.start_container(container).await?;
+        // Ensure dual-home for clusters provisioned before this fix.
+        if let Err(e) = self.attach_management_network(container).await {
+            error!(error = %e, %container, "management network attach on start");
+        }
         self.wait_healthy(container).await
     }
 
@@ -166,6 +200,9 @@ impl ClusterProvisioner {
             info!(error = %e, "stop during restart (may already be stopped)");
         }
         self.docker.start_container(container).await?;
+        if let Err(e) = self.attach_management_network(container).await {
+            error!(error = %e, %container, "management network attach on restart");
+        }
         self.wait_healthy(container).await
     }
 

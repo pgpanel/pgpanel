@@ -24,9 +24,13 @@ pub struct Config {
     pub databasus_base_url: Option<String>,
     pub databasus_token: Option<String>,
     pub docker_host: Option<String>,
+    /// Shared internal network so panel (and Databasus) can reach PG containers by DNS.
+    pub management_network: String,
     pub cluster_network_prefix: String,
     pub cluster_volume_prefix: String,
     pub cluster_container_prefix: String,
+    /// When false (default), Databasus uses Manual adapter — no invented HTTP API paths.
+    pub databasus_http_api: bool,
     pub default_statement_timeout_ms: u64,
     pub default_lock_timeout_ms: u64,
     pub sql_console_max_rows: usize,
@@ -74,12 +78,17 @@ impl Config {
             databasus_base_url: env::var("DATABASUS_BASE_URL").ok(),
             databasus_token: env::var("DATABASUS_INTERNAL_TOKEN").ok(),
             docker_host: env::var("DOCKER_HOST").ok(),
+            management_network: env::var("PGPANEL_MANAGEMENT_NETWORK")
+                .unwrap_or_else(|_| "pgpanel_database_management".into()),
             cluster_network_prefix: env::var("PGPANEL_NETWORK_PREFIX")
                 .unwrap_or_else(|_| "pgpanel_net_".into()),
             cluster_volume_prefix: env::var("PGPANEL_VOLUME_PREFIX")
                 .unwrap_or_else(|_| "pgpanel_vol_".into()),
             cluster_container_prefix: env::var("PGPANEL_CONTAINER_PREFIX")
                 .unwrap_or_else(|_| "pgpanel_pg_".into()),
+            // Off by default: Databasus public provisioning API is version-dependent
+            // and not verified. Manual setup avoids invented /api/v1/* failures.
+            databasus_http_api: env_bool("DATABASUS_HTTP_API", false),
             default_statement_timeout_ms: env_parse("PGPANEL_STATEMENT_TIMEOUT_MS", 15_000),
             default_lock_timeout_ms: env_parse("PGPANEL_LOCK_TIMEOUT_MS", 3_000),
             sql_console_max_rows: env_parse("PGPANEL_SQL_MAX_ROWS", 1000),

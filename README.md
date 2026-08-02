@@ -32,9 +32,11 @@ This is the **supported production install path**. It:
 **Notes:**
 
 - No Git URL to type — the official repo is fixed.  
-- Prefer an **SSH session with a real TTY** (not a broken non-interactive pipe).  
+- **Only pulls images and configures** — never builds Rust/frontend on the VPS.  
+- Panel image: `ghcr.io/pgpanel/pgpanel:<version>` (publish from your Mac with `./deploy/push-image.sh`).  
+- Prefer an **SSH session with a real TTY**.  
 - If install is interrupted: `sudo bash /opt/pgpanel/deploy/install.sh --mode resume`  
-- First login: `https://YOUR_DOMAIN/setup` — default user `admin` (or what you chose); password is generated/shown once.
+- First login: `https://YOUR_DOMAIN/setup` — default user `admin` (or what you chose); password is shown once.
 
 ### Minimum host
 
@@ -94,9 +96,9 @@ Default panel image:
 ghcr.io/pgpanel/pgpanel:<VERSION>
 ```
 
-- VPS is typically **linux/amd64** — that is what production pulls.  
-- Apple Silicon (arm64) needs either `--platform linux/amd64` or a multi-arch publish.  
-- If GHCR is private/missing, the installer **falls back to building on the VPS** (slow) or reuses a local `pgpanel-panel` image.
+- Production install **only pulls** this image (plus Caddy + Databasus). **No VPS build.**  
+- VPS is typically **linux/amd64** — publish that platform (or multi-arch from your Mac).  
+- If pull fails (private/missing package), install **stops** — publish a public GHCR image first.
 
 ### Publish image from your Mac
 

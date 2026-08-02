@@ -19,20 +19,30 @@ use std::sync::Arc;
 
 /// Build the appropriate adapter from config.
 ///
-/// If DATABASUS_BASE_URL is set, uses HttpDatabasusAdapter.
-/// Otherwise uses ManualDatabasusAdapter (pending manual setup).
+/// Default: ManualDatabasusAdapter (PendingManualSetup). Databasus does not
+/// expose a stable, documented public provisioning API that we can safely
+/// invent paths for. HTTP adapter is opt-in via DATABASUS_HTTP_API=1 after
+/// verifying endpoint paths against the installed Databasus version.
 pub fn build_adapter(config: &Config) -> Arc<dyn DatabasusAdapter> {
+    if !config.databasus_http_api {
+        tracing::info!(
+            "Databasus HTTP API disabled (default); using Manual adapter — \
+             set DATABASUS_HTTP_API=1 only after verifying API paths"
+        );
+        return Arc::new(ManualDatabasusAdapter::new());
+    }
+
     match (&config.databasus_base_url, &config.databasus_token) {
-        (Some(url), Some(token)) if !url.is_empty() => {
-            tracing::info!(%url, "using HttpDatabasusAdapter");
+        (Some(url), Some(token)) if !url.is_empty() && !token.is_empty() => {
+            tracing::info!(%url, "using HttpDatabasusAdapter (DATABASUS_HTTP_API=1)");
             Arc::new(HttpDatabasusAdapter::new(url.clone(), token.clone()))
         }
         (Some(url), _) if !url.is_empty() => {
-            tracing::warn!("DATABASUS_BASE_URL set but no token; using Manual adapter");
+            tracing::warn!("DATABASUS_HTTP_API=1 but no token; using Manual adapter");
             Arc::new(ManualDatabasusAdapter::new())
         }
         _ => {
-            tracing::info!("no Databasus URL configured; using Manual adapter");
+            tracing::info!("DATABASUS_HTTP_API=1 but no URL; using Manual adapter");
             Arc::new(ManualDatabasusAdapter::new())
         }
     }

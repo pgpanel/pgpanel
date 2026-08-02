@@ -40,9 +40,10 @@ impl HttpDatabasusAdapter {
 #[async_trait]
 impl DatabasusAdapter for HttpDatabasusAdapter {
     async fn register_cluster(&self, req: RegisterRequest) -> Result<ClusterRegistration> {
-        // Placeholder path — verify against real Databasus API before production.
+        // Soft-fail path only — endpoints are NOT guaranteed for all Databasus versions.
+        // Prefer Manual adapter (DATABASUS_HTTP_API=0, the default).
         let url = self.url("/api/v1/storages");
-        info!(%url, cluster = %req.cluster_id, "attempting Databasus registration");
+        info!(%url, cluster = %req.cluster_id, "attempting Databasus registration (opt-in HTTP API)");
 
         let body = serde_json::json!({
             "name": req.name,
@@ -54,7 +55,7 @@ impl DatabasusAdapter for HttpDatabasusAdapter {
             "database": req.database,
         });
 
-        let resp = self
+        let resp = match self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.token))
@@ -62,7 +63,27 @@ impl DatabasusAdapter for HttpDatabasusAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Databasus(format!("HTTP request failed: {e}")))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Connection / DNS / TLS failures → manual setup, never hard error.
+                warn!(error = %e, %url, "Databasus HTTP unreachable; falling back to manual setup");
+                return Ok(ClusterRegistration {
+                    external_id: None,
+                    status: DatabasusIntegrationStatus::PendingManualSetup,
+                    message: Some(format!(
+                        "Databasus HTTP unreachable ({e}). Add the cluster manually in the Databasus UI."
+                    )),
+                    manual_setup_info: Some(serde_json::json!({
+                        "host": req.host,
+                        "port": req.port,
+                        "username": req.username,
+                        "database": req.database,
+                        "error": e.to_string(),
+                    })),
+                });
+            }
+        };
 
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -74,7 +95,7 @@ impl DatabasusAdapter for HttpDatabasusAdapter {
                 external_id: None,
                 status: DatabasusIntegrationStatus::PendingManualSetup,
                 message: Some(format!(
-                    "Databasus API returned {status}. Verify API paths for your Databasus version. Response: {}",
+                    "Databasus API returned {status}. Verify API paths for your Databasus version, or keep DATABASUS_HTTP_API=0. Response: {}",
                     text.chars().take(200).collect::<String>()
                 )),
                 manual_setup_info: Some(serde_json::json!({

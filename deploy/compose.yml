@@ -59,14 +59,9 @@ services:
       - /config/caddy
 
   panel:
-    # Prefer pre-built GHCR image; build: is fallback when registry is private/missing.
+    # Pre-built only — installer never builds on the VPS.
     image: ${PGPANEL_IMAGE:-ghcr.io/pgpanel/pgpanel:0.1.0}
-    pull_policy: ${PGPANEL_PULL_POLICY:-missing}
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-      args:
-        PGPANEL_VERSION: ${PGPANEL_VERSION:-0.1.0}
+    pull_policy: ${PGPANEL_PULL_POLICY:-always}
     restart: unless-stopped
     env_file:
       - ../.env
@@ -77,6 +72,10 @@ services:
       PGPANEL_DATABASE_URL: sqlite:///var/lib/pgpanel/panel.db?mode=rwc
       DOCKER_HOST: unix:///var/run/docker.sock
       DATABASUS_BASE_URL: ${DATABASUS_BASE_URL:-http://databasus:8000}
+      # Dual-home PG clusters here so panel resolves pgpanel_pg_* hostnames.
+      PGPANEL_MANAGEMENT_NETWORK: ${PGPANEL_MANAGEMENT_NETWORK:-pgpanel_database_management}
+      # Off by default — no invented Databasus provisioning HTTP paths.
+      DATABASUS_HTTP_API: ${DATABASUS_HTTP_API:-0}
     volumes:
       - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/panel:/var/lib/pgpanel
       # HIGH RISK — Docker socket for cluster provisioning only.
@@ -113,7 +112,10 @@ services:
     volumes:
       - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/databasus:/data
     networks:
+      # Internal stack + management so Databasus can reach PG clusters by DNS.
+      # Never on frontend unless DATABASUS_PUBLIC=1 (installer-generated compose).
       - pgpanel_internal
+      - pgpanel_database_management
     expose:
       - "8000"
     healthcheck:
