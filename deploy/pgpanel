@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# PgPanel management CLI — installed to /usr/local/bin/pgpanel
+# shellcheck disable=SC1091
+set -Eeuo pipefail
+
+readonly CONF_FILE="/etc/pgpanel/installer.conf"
+readonly DEFAULT_INSTALL_DIR="/opt/pgpanel"
+
+load_conf() {
+  if [[ -f "$CONF_FILE" ]]; then
+    # shellcheck source=/dev/null
+    set -a
+    # shellcheck disable=SC1090
+    source "$CONF_FILE"
+    set +a
+  fi
+  INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+  DATA_DIR="${DATA_DIR:-/var/lib/pgpanel}"
+  LOG_DIR="${LOG_DIR:-/var/log/pgpanel}"
+  COMPOSE_FILE="${INSTALL_DIR}/deploy/compose.yml"
+  INSTALLER="${INSTALL_DIR}/deploy/install.sh"
+  if [[ ! -f "$INSTALLER" && -f "$(dirname "$0")/install.sh" ]]; then
+    INSTALLER="$(cd "$(dirname "$0")" && pwd)/install.sh"
+  fi
+}
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      exec sudo -E "$0" "$@"
+    fi
+    echo "Root required" >&2
+    exit 1
+  fi
+}
+
+compose() {
+  if [[ ! -f "$COMPOSE_FILE" ]]; then
+    echo "Compose file not found: $COMPOSE_FILE" >&2
+    exit 1
+  fi
+  (cd "$(dirname "$COMPOSE_FILE")" && docker compose -f compose.yml "$@")
+}
+
+usage() {
+  cat <<'EOF'
+PgPanel management CLI
+
+Usage:
+  pgpanel status
+  pgpanel start
+  pgpanel stop
+  pgpanel restart
+  pgpanel logs [service]
+  pgpanel update
+  pgpanel repair
+  pgpanel configure
+  pgpanel backup-test
+  pgpanel security-check
+  pgpanel uninstall
+  pgpanel version
+  pgpanel env-check
+
+EOF
+}
+
+cmd_status() {
+  echo "=== Compose services ==="
+  compose ps || true
+  echo ""
+  echo "=== Health ==="
+  docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
+    -fsS http://panel:8080/health 2>/dev/null && echo "panel /health: ok" || echo "panel /health: fail"
+  docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
+    -fsS http://panel:8080/ready 2>/dev/null && echo "panel /ready: ok" || echo "panel /ready: fail"
+  echo ""
+  echo "=== Disk ==="
+  df -h "$DATA_DIR" 2>/dev/null || df -h /
+  echo ""
+  echo "=== .env perms ==="
+  if [[ -f "${INSTALL_DIR}/.env" ]]; then
+    ls -l "${INSTALL_DIR}/.env"
+  else
+    echo "missing ${INSTALL_DIR}/.env"
+  fi
+}
+
+cmd_version() {
+  echo "Install dir: $INSTALL_DIR"
+  if [[ -d "${INSTALL_DIR}/.git" ]]; then
+    echo "Git commit: $(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+    echo "Git describe: $(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || echo n/a)"
+  fi
+  if [[ -f "$CONF_FILE" ]]; then
+    grep -E '^(INSTALLER_VERSION|PANEL_DOMAIN|UPDATE_CHANNEL|PRODUCTION_READY)=' "$CONF_FILE" || true
+  fi
+  docker --version 2>/dev/null || true
+  docker compose version 2>/dev/null || true
+}
+
+cmd_env_check() {
+  local f="${INSTALL_DIR}/.env"
+  [[ -f "$f" ]] || { echo "missing .env"; exit 1; }
+  local mode
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%OLp' "$f")"
+  echo "path=$f mode=$mode"
+  [[ "$mode" == "600" ]] || echo "WARNING: expected 0600"
+  # keys present without values
+  for k in PGPANEL_MASTER_KEY PGPANEL_BOOTSTRAP_TOKEN DATABASUS_INTERNAL_TOKEN; do
+    if grep -q "^${k}=" "$f"; then
+      echo "present: $k"
+    else
+      echo "MISSING: $k"
+    fi
+  done
+}
+
+main() {
+  load_conf
+  local cmd="${1:-}"
+  case "$cmd" in
+    status) cmd_status ;;
+    start) need_root "$@"; compose up -d ;;
+    stop) need_root "$@"; compose stop ;;
+    restart) need_root "$@"; compose restart ;;
+    logs) shift; compose logs -f --tail=200 "$@" ;;
+    update) need_root "$@"; exec bash "$INSTALLER" --mode update ;;
+    repair) need_root "$@"; exec bash "$INSTALLER" --mode repair ;;
+    configure) need_root "$@"; exec bash "$INSTALLER" --mode configure ;;
+    backup-test) need_root "$@"; exec bash "$INSTALLER" --mode backup-test ;;
+    security-check) need_root "$@"; exec bash "$INSTALLER" --mode security ;;
+    uninstall) need_root "$@"; exec bash "$INSTALLER" --mode uninstall ;;
+    version) cmd_version ;;
+    env-check) cmd_env_check ;;
+    -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 0; exit 0 ;;
+    *) echo "Unknown command: $cmd" >&2; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

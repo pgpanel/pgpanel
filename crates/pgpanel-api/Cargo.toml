@@ -1,0 +1,52 @@
+[package]
+name = "pgpanel-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pgpanel"
+path = "src/main.rs"
+
+[dependencies]
+pgpanel-core = { path = "../pgpanel-core" }
+pgpanel-docker = { path = "../pgpanel-docker" }
+pgpanel-postgres = { path = "../pgpanel-postgres" }
+pgpanel-databasus = { path = "../pgpanel-databasus" }
+pgpanel-jobs = { path = "../pgpanel-jobs" }
+
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
+sqlx = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+rand = { workspace = true }
+cookie = { workspace = true }
+http = { workspace = true }
+mime_guess = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+async-stream = "0.3"
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"

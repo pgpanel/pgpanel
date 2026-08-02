@@ -1,0 +1,26 @@
+[package]
+name = "pgpanel-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pgpanel-core = { path = "../pgpanel-core" }
+pgpanel-docker = { path = "../pgpanel-docker" }
+pgpanel-postgres = { path = "../pgpanel-postgres" }
+pgpanel-databasus = { path = "../pgpanel-databasus" }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+secrecy = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

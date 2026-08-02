@@ -1,0 +1,47 @@
+# PgPanel Caddy reverse proxy template
+# install.sh rewrites this for domain / HTTP-only modes.
+#
+# Public surface only: Caddy :80 / :443
+# Panel and Databasus stay on internal Docker networks.
+
+{
+	email {$CADDY_EMAIL}
+}
+
+{$PGPANEL_DOMAIN::80} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		-Server
+	}
+
+	request_body {
+		max_size 10MB
+	}
+
+	reverse_proxy panel:8080
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Optional public Databasus UI — only enable if DATABASUS_PUBLIC=1 in installer.
+# {$DATABASUS_DOMAIN} {
+# 	encode zstd gzip
+# 	header {
+# 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+# 		X-Content-Type-Options "nosniff"
+# 		X-Frame-Options "DENY"
+# 		Referrer-Policy "strict-origin-when-cross-origin"
+# 		-Server
+# 	}
+# 	reverse_proxy databasus:8000
+# }

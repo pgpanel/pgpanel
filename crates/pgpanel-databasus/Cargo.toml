@@ -1,0 +1,22 @@
+[package]
+name = "pgpanel-databasus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pgpanel-core = { path = "../pgpanel-core" }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+secrecy = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

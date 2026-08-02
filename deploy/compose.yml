@@ -1,0 +1,129 @@
+# PgPanel production stack template
+# Rendered/overwritten by install.sh with host-specific paths.
+# PostgreSQL clusters are created dynamically by the panel — NOT listed here.
+#
+# SECURITY: The panel service mounts the Docker socket (host-root equivalent).
+# Databasus and Caddy must never receive the socket. See SECURITY.md.
+
+name: pgpanel
+
+networks:
+  pgpanel_frontend:
+    name: pgpanel_frontend
+    driver: bridge
+  pgpanel_internal:
+    name: pgpanel_internal
+    driver: bridge
+    internal: false
+  pgpanel_database_management:
+    name: pgpanel_database_management
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+services:
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PGPANEL_DOMAIN: ${PGPANEL_DOMAIN:-}
+      DATABASUS_DOMAIN: ${DATABASUS_DOMAIN:-}
+      CADDY_EMAIL: ${CADDY_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - pgpanel_frontend
+    depends_on:
+      - panel
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /config/caddy
+
+  panel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      PGPANEL_BIND: 0.0.0.0:8080
+      PGPANEL_DATA_DIR: /var/lib/pgpanel
+      PGPANEL_STATIC_DIR: /app/static
+      PGPANEL_DATABASE_URL: sqlite:///var/lib/pgpanel/panel.db?mode=rwc
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DATABASUS_BASE_URL: ${DATABASUS_BASE_URL:-http://databasus:8000}
+    volumes:
+      - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/panel:/var/lib/pgpanel
+      # HIGH RISK — Docker socket for cluster provisioning only.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - pgpanel_frontend
+      - pgpanel_internal
+      - pgpanel_database_management
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - databasus
+
+  databasus:
+    # Pin a specific tag in production — never rely on floating latest long-term.
+    image: ${DATABASUS_IMAGE:-ghcr.io/databasus/databasus:latest}
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASUS_INTERNAL_TOKEN: ${DATABASUS_INTERNAL_TOKEN:-}
+    volumes:
+      - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/databasus:/data
+    networks:
+      - pgpanel_internal
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/ || exit 0"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    # Databasus MUST NOT mount /var/run/docker.sock

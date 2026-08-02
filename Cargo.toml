@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pgpanel-api",
+    "crates/pgpanel-core",
+    "crates/pgpanel-docker",
+    "crates/pgpanel-postgres",
+    "crates/pgpanel-databasus",
+    "crates/pgpanel-jobs",
+]
+default-members = ["crates/pgpanel-api"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["PgPanel Contributors"]
+repository = "https://github.com/example/pgpanel"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Web
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header", "limit", "compression-gzip"] }
+tower_governor = "0.5"
+utoipa = { version = "5", features = ["chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+
+# Docker
+bollard = "0.18"
+
+# HTTP client (rustls)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto / secrets
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+
+# Identifiers / time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Errors / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# SQL parsing for console
+pg_query = "6"
+
+# Utilities
+regex = "1"
+once_cell = "1"
+bytes = "1"
+mime_guess = "2"
+http = "1"
+cookie = "0.18"
+url = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
