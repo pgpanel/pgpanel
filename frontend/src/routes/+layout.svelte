@@ -78,10 +78,11 @@
 			query: 'SQL console',
 			backup: 'Backup',
 			wizard: 'Setup wizard',
-			nodes: 'Nodes',
+			nodes: 'Fleet',
 			monitoring: 'Monitoring',
 			replicas: 'Replicas',
-			destinations: 'Destinations',
+			destinations: 'Backups',
+			join: 'Join',
 			alerts: 'Alerts',
 			waf: 'WAF',
 			users: 'Users'

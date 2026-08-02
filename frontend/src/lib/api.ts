@@ -410,6 +410,7 @@ export interface MonitoringOverview {
 export interface FleetRemoteAccess {
 	enabled: boolean;
 	public_base_url: string | null;
+	public_name?: string;
 	has_token?: boolean;
 	token_prefix?: string | null;
 	join_url: string | null;
@@ -444,8 +445,9 @@ export interface FleetPeer {
 }
 
 export interface FleetJoinRequest {
-	base_url: string;
-	token: string;
+	link?: string;
+	base_url?: string;
+	token?: string;
 	local_name?: string;
 }
 
@@ -537,6 +539,44 @@ export interface WalStreamStatus {
 	searchable: boolean;
 }
 
+/** Normalize GET /wal responses (flat preferred; nested `stream` accepted for older builds). */
+export function normalizeWalStatus(raw: unknown): WalStreamStatus {
+	const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+	const stream =
+		obj.stream && typeof obj.stream === 'object'
+			? (obj.stream as Record<string, unknown>)
+			: null;
+	const src = stream ?? obj;
+	const pgRaw =
+		(obj.pg && typeof obj.pg === 'object' ? obj.pg : null) ??
+		(src.pg && typeof src.pg === 'object' ? src.pg : null);
+	const pgSrc = (pgRaw ?? {}) as Record<string, unknown>;
+	const segmentCount = Number(src.segment_count ?? 0) || 0;
+	const enabled = Boolean(obj.enabled ?? src.enabled ?? false);
+	return {
+		enabled,
+		status: String(src.status ?? (enabled ? 'unknown' : 'disabled')),
+		archive_dir: (src.archive_dir as string | null | undefined) ?? null,
+		retention_days: Number(src.retention_days ?? 14) || 14,
+		last_segment: (src.last_segment as string | null | undefined) ?? null,
+		last_synced_at: (src.last_synced_at as string | null | undefined) ?? null,
+		segment_count: segmentCount,
+		total_bytes: Number(src.total_bytes ?? 0) || 0,
+		timeline:
+			src.timeline == null || src.timeline === ''
+				? null
+				: String(src.timeline),
+		searchable: Boolean(obj.searchable ?? src.searchable ?? segmentCount > 0),
+		pg: {
+			archive_mode: (pgSrc.archive_mode as string | null | undefined) ?? null,
+			wal_level: (pgSrc.wal_level as string | null | undefined) ?? null,
+			last_archived_wal: (pgSrc.last_archived_wal as string | null | undefined) ?? null,
+			failed_count: Number(pgSrc.failed_count ?? 0) || 0,
+			message: (pgSrc.message as string | null | undefined) ?? null
+		}
+	};
+}
+
 export interface WalSegment {
 	id: string;
 	filename: string;
@@ -591,7 +631,8 @@ export interface AuditLog {
 }
 
 /** Map cluster/job status → Badge variant */
-export function statusVariant(status: string): BadgeVariant {
+export function statusVariant(status: string | null | undefined): BadgeVariant {
+	if (!status) return 'outline';
 	const s = status.toLowerCase();
 	if (s.includes('healthy') && !s.includes('warning')) return 'default';
 	if (s.includes('warning') || s === 'degraded' || s === 'starting' || s === 'running' || s === 'queued')

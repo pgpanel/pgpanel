@@ -17,7 +17,7 @@
 set -Eeuo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly INSTALLER_VERSION="1.5.1"
+readonly INSTALLER_VERSION="1.5.2"
 readonly PGPANEL_AUTHOR="Dezső Benedek Péter"
 readonly PGPANEL_OFFICIAL_REPO="https://github.com/pgpanel/pgpanel.git"
 readonly PGPANEL_GHCR_IMAGE="ghcr.io/pgpanel/pgpanel"
@@ -1028,6 +1028,36 @@ get_local_version() {
   fi
 }
 
+# Image tag currently running in the panel container (not the git tree VERSION).
+# After a manual `git pull`, tree VERSION can already match remote while Docker
+# still runs an older tag — that is what confused "Already on latest".
+get_running_panel_image() {
+  local cid="" img=""
+  cid="$(docker ps -q --filter 'label=com.docker.compose.service=panel' 2>/dev/null | head -1 || true)"
+  if [[ -z "$cid" ]]; then
+    cid="$(docker ps --format '{{.ID}}\t{{.Names}}' 2>/dev/null | awk 'tolower($2) ~ /panel/ {print $1; exit}' || true)"
+  fi
+  if [[ -z "$cid" ]]; then
+    printf 'not-running'
+    return 0
+  fi
+  img="$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+  if [[ -z "$img" ]]; then
+    printf 'unknown'
+    return 0
+  fi
+  printf '%s' "$img"
+}
+
+get_image_tag() {
+  local img="${1:-}"
+  if [[ -z "$img" || "$img" == "not-running" || "$img" == "unknown" ]]; then
+    printf '%s' "$img"
+    return 0
+  fi
+  printf '%s' "${img##*:}"
+}
+
 get_remote_version() {
   # Prefer VERSION on selected ref (stable → main or latest release tag)
   local ref="${1:-$GIT_REF}"
@@ -1067,24 +1097,31 @@ resolve_panel_image() {
 }
 
 show_version_status() {
-  local local_v remote_v
+  local local_v remote_v running_img running_tag
   local_v="$(get_local_version)"
   remote_v="$(get_remote_version "$GIT_REF")"
   PGPANEL_VERSION="$local_v"
   resolve_panel_image
+  running_img="$(get_running_panel_image)"
+  running_tag="$(get_image_tag "$running_img")"
   echo ""
   echo "${C_BOLD}Version status${C_RESET}"
   echo "  Installed (tree):  ${local_v}"
   echo "  Remote (${GIT_REF}): ${remote_v}"
-  echo "  Panel image:       ${PGPANEL_IMAGE}"
+  echo "  Target image:      ${PGPANEL_IMAGE}"
+  echo "  Running panel:     ${running_img}"
   echo "  Channel:           ${UPDATE_CHANNEL}"
   echo "  Installer:         ${INSTALLER_VERSION}"
   echo "  Developer:         ${PGPANEL_AUTHOR}"
+  if [[ "$running_img" != "not-running" && "$running_img" != "unknown" && "$running_img" != "$PGPANEL_IMAGE" ]]; then
+    log_warn "Running container lags target: ${running_tag} → ${PGPANEL_IMAGE##*:} (git tree is already ${local_v})"
+    return 0
+  fi
   if [[ "$local_v" != "unknown" && "$remote_v" != "unknown" && "$local_v" != "$remote_v" ]]; then
     log_warn "Update available: ${local_v} → ${remote_v}"
     return 0
   elif [[ "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
-    log_ok "Already on latest known version (${local_v})"
+    log_ok "Git tree matches remote (${local_v}) — answer Y to re-pull/recreate images if needed"
     return 1
   fi
   return 0
@@ -2496,23 +2533,38 @@ do_update() {
   REPO_URL="$PGPANEL_OFFICIAL_REPO"
   LOG_FILE="${LOG_DIR}/installer.log"
   mkdir -p "$LOG_DIR"
-  log_info "Starting production update (preserves data, secrets, volumes)…"
+  log_info "Starting production update…"
+  log_info "The panel app (binary, UI, migrations) lives in the Docker image — not in git."
+  log_info "Git sync only refreshes host templates: compose, Caddyfile, installer/CLI."
 
   ensure_interactive_stdin
 
-  local local_v remote_v
+  local local_v remote_v running_img need_image_refresh=0
   local_v="$(get_local_version)"
   remote_v="$(get_remote_version "$GIT_REF")"
+  PGPANEL_VERSION="$local_v"
+  # Clear stale pin so status/target reflect tree VERSION (not old .env tag).
+  PGPANEL_IMAGE=""
+  resolve_panel_image
+  running_img="$(get_running_panel_image)"
   show_version_status || true
 
-  if [[ "$FORCE_UPDATE" -ne 1 && "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
-    if ! confirm "Already on ${local_v}. Update anyway (re-pull images)?" "N"; then
+  if [[ "$running_img" != "not-running" && "$running_img" != "unknown" && "$running_img" != "$PGPANEL_IMAGE" ]]; then
+    need_image_refresh=1
+    log_warn "Running container is still ${running_img} — image pull/recreate is required."
+    log_info "Target image: ${PGPANEL_IMAGE}"
+  fi
+
+  # Tree VERSION already matches remote after a manual `git pull`, but that does
+  # not mean the running Docker image was upgraded. Only skip when both match.
+  if [[ "$FORCE_UPDATE" -ne 1 && "$need_image_refresh" -eq 0 && "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
+    if ! confirm "Tree and running image already on ${local_v}. Re-pull images anyway?" "N"; then
       log_info "Update cancelled"
       return 0
     fi
   fi
 
-  if ! confirm "Continue update? PostgreSQL volumes, panel SQLite, .env secrets and Databasus data are kept." "Y"; then
+  if ! confirm "Continue? Volumes, panel SQLite, .env secrets and Databasus data are kept." "Y"; then
     die "Update aborted"
   fi
 

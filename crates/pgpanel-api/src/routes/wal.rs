@@ -5,9 +5,12 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::DateTime;
+use pgpanel_backup::{query_wal_status, WalStatus};
 use pgpanel_core::audit;
+use pgpanel_core::crypto::decrypt_secret;
 use pgpanel_core::error::Error;
 use pgpanel_core::models::JobType;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -100,7 +103,7 @@ async fn get_wal(
     _auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let _ = load_cluster(&state, id).await?;
+    let cluster = load_cluster(&state, id).await?;
     let stream = sqlx::query_as::<_, WalRow>(
         r#"
         SELECT cluster_id, enabled, archive_dir, compress, retention_days, status,
@@ -113,29 +116,71 @@ async fn get_wal(
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+
     let enabled = stream.as_ref().map(|s| s.enabled).unwrap_or(false);
-    let stream_json = stream.map(|s| {
-        serde_json::json!({
-            "cluster_id": s.cluster_id,
-            "enabled": s.enabled,
-            "archive_dir": s.archive_dir,
-            "compress": s.compress,
-            "retention_days": s.retention_days,
-            "status": s.status,
-            "last_segment": s.last_segment,
-            "last_synced_at": s.last_synced_at,
-            "last_error": s.last_error,
-            "timeline": s.timeline,
-            "segment_count": s.segment_count,
-            "total_bytes": s.total_bytes,
-            "created_at": s.created_at,
-            "updated_at": s.updated_at,
-        })
-    });
+    let status = stream
+        .as_ref()
+        .map(|s| s.status.clone())
+        .unwrap_or_else(|| if enabled { "unknown".into() } else { "disabled".into() });
+    let archive_dir = stream.as_ref().map(|s| s.archive_dir.clone());
+    let compress = stream.as_ref().map(|s| s.compress).unwrap_or(true);
+    let retention_days = stream.as_ref().map(|s| s.retention_days).unwrap_or(14);
+    let last_segment = stream.as_ref().and_then(|s| s.last_segment.clone());
+    let last_synced_at = stream.as_ref().and_then(|s| s.last_synced_at.clone());
+    let last_error = stream.as_ref().and_then(|s| s.last_error.clone());
+    let timeline = stream.as_ref().and_then(|s| s.timeline);
+    let segment_count = stream.as_ref().map(|s| s.segment_count).unwrap_or(0);
+    let total_bytes = stream.as_ref().map(|s| s.total_bytes).unwrap_or(0);
+
+    let pg = match load_pg_wal_status(&state, &cluster.docker_container_name, id).await {
+        Ok(status) => serde_json::json!({
+            "archive_mode": status.archive_mode,
+            "wal_level": status.wal_level,
+            "last_archived_wal": status.last_archived_wal,
+            "failed_count": status.failed_count,
+            "message": status.message,
+        }),
+        Err(err) => serde_json::json!({
+            "archive_mode": null,
+            "wal_level": null,
+            "last_archived_wal": null,
+            "failed_count": 0,
+            "message": err.to_string(),
+        }),
+    };
+
+    // Flat shape for the frontend (not nested under `stream`).
     Ok(Json(serde_json::json!({
-        "stream": stream_json,
         "enabled": enabled,
+        "status": status,
+        "archive_dir": archive_dir,
+        "compress": compress,
+        "retention_days": retention_days,
+        "last_segment": last_segment,
+        "last_synced_at": last_synced_at,
+        "last_error": last_error,
+        "timeline": timeline.map(|t| t.to_string()),
+        "segment_count": segment_count,
+        "total_bytes": total_bytes,
+        "searchable": segment_count > 0,
+        "pg": pg,
     })))
+}
+
+async fn load_pg_wal_status(
+    state: &AppState,
+    container: &str,
+    cluster_id: Uuid,
+) -> Result<WalStatus, Error> {
+    let enc: String = sqlx::query_scalar(
+        "SELECT password_encrypted FROM cluster_credentials WHERE cluster_id = ? AND role_name = 'postgres'",
+    )
+    .bind(cluster_id.to_string())
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| Error::Internal(e.to_string()))?;
+    let password = decrypt_secret(&state.config.master_encryption_key, &enc)?;
+    query_wal_status(container, password.expose_secret()).await
 }
 
 async fn enable_wal(

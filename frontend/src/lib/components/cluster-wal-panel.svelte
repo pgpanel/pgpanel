@@ -3,6 +3,7 @@
 	import {
 		api,
 		formatRelative,
+		normalizeWalStatus,
 		type WalSegment,
 		type WalStreamStatus,
 		type WalSegmentsResponse
@@ -90,7 +91,8 @@
 	}
 
 	async function loadStatus() {
-		wal = await api<WalStreamStatus>(`/api/clusters/${clusterId}/wal`);
+		const raw = await api<unknown>(`/api/clusters/${clusterId}/wal`);
+		wal = normalizeWalStatus(raw);
 	}
 
 	async function loadSegments() {

@@ -58,7 +58,6 @@
 		{ href: `/clusters/${id}/browser`, label: 'Browser', icon: TableIcon },
 		{ href: `/clusters/${id}/query`, label: 'SQL console', icon: CodeIcon },
 		{ href: `/clusters/${id}/backup`, label: 'Backups', icon: CloudBackupIcon },
-		{ href: `/clusters/${id}/backup?tab=wal`, label: 'WAL / PITR', icon: DatabaseSyncIcon },
 		{ href: `/replicas?cluster=${id}`, label: 'Replicas', icon: DatabaseSyncIcon }
 	]);
 </script>
@@ -90,7 +89,7 @@
 	{/if}
 
 	<div class="mb-6 flex flex-wrap gap-2">
-		{#each links as l}
+		{#each links as l (l.href)}
 			<Button variant="secondary" href={l.href}>
 				<HugeiconsIcon icon={l.icon} class="size-4" strokeWidth={2} />
 				{l.label}
