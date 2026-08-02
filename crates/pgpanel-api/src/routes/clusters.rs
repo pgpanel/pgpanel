@@ -24,6 +24,11 @@ pub fn routes() -> Router<AppState> {
             "/api/clusters/{id}",
             get(get_cluster).delete(delete_cluster),
         )
+        .route("/api/clusters/{id}/connection", get(connection_info))
+        .route(
+            "/api/clusters/{id}/connection/reveal",
+            post(reveal_connection_password),
+        )
         .route("/api/clusters/{id}/start", post(start_cluster))
         .route("/api/clusters/{id}/stop", post(stop_cluster))
         .route("/api/clusters/{id}/restart", post(restart_cluster))
@@ -63,6 +68,181 @@ async fn get_cluster(
     Ok(Json(cluster))
 }
 
+async fn connection_info(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let cluster = load_cluster(&state, id).await?;
+    let databases: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, owner_role FROM databases WHERE cluster_id = ? ORDER BY name",
+    )
+    .bind(id.to_string())
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM database_roles WHERE cluster_id = ? AND can_login = 1 ORDER BY name",
+    )
+    .bind(id.to_string())
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    let mut role_list = roles;
+    if !role_list.iter().any(|r| r == "postgres") {
+        role_list.insert(0, "postgres".into());
+    }
+    let mut db_list: Vec<serde_json::Value> = databases
+        .into_iter()
+        .map(|(name, owner)| serde_json::json!({"name": name, "owner_role": owner}))
+        .collect();
+    if !db_list.iter().any(|d| d["name"] == "postgres") {
+        db_list.insert(
+            0,
+            serde_json::json!({"name": "postgres", "owner_role": "postgres"}),
+        );
+    }
+    if !db_list.iter().any(|d| d["name"] == "app") {
+        // Prefer showing app even before job finishes registering it
+        if role_list.iter().any(|r| r == "app") {
+            db_list.push(serde_json::json!({"name": "app", "owner_role": "app"}));
+        }
+    }
+
+    let default_role = if role_list.iter().any(|r| r == "app") {
+        "app"
+    } else {
+        "postgres"
+    };
+    let default_database = if db_list.iter().any(|d| d["name"] == "app") {
+        "app"
+    } else {
+        "postgres"
+    };
+
+    Ok(Json(serde_json::json!({
+        "cluster_id": id,
+        "internal_host": cluster.internal_hostname,
+        "public_port": cluster.public_port,
+        "default_port": 5432,
+        "default_role": default_role,
+        "default_database": default_database,
+        "roles": role_list,
+        "databases": db_list,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct RevealBody {
+    role: String,
+    #[serde(default)]
+    database: Option<String>,
+    /// "internal" | "public"
+    #[serde(default = "default_host_mode")]
+    host_mode: String,
+}
+
+fn default_host_mode() -> String {
+    "internal".into()
+}
+
+async fn reveal_connection_password(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<RevealBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    use pgpanel_core::crypto::decrypt_secret;
+    use pgpanel_core::validation::validate_safe_name;
+
+    validate_safe_name(&body.role, "role").map_err(AppError)?;
+    let cluster = load_cluster(&state, id).await?;
+    let enc: Option<String> = sqlx::query_scalar(
+        "SELECT password_encrypted FROM cluster_credentials WHERE cluster_id = ? AND role_name = ?",
+    )
+    .bind(id.to_string())
+    .bind(&body.role)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let enc = enc.ok_or_else(|| {
+        AppError(Error::NotFound(format!(
+            "no stored password for role {}",
+            body.role
+        )))
+    })?;
+    let password = decrypt_secret(&state.config.master_encryption_key, &enc).map_err(AppError)?;
+
+    let database = body
+        .database
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| "app".into());
+    validate_safe_name(&database, "database").map_err(AppError)?;
+
+    let (host, port) = if body.host_mode == "public" {
+        let port = cluster.public_port.ok_or_else(|| {
+            AppError(Error::Validation(
+                "cluster is not exposed publicly — use internal host".into(),
+            ))
+        })?;
+        (
+            // Public connections typically use the panel domain or server IP;
+            // callers should replace host for external clients.
+            cluster.internal_hostname.clone(),
+            port as u16,
+        )
+    } else {
+        (cluster.internal_hostname.clone(), 5432u16)
+    };
+
+    use secrecy::ExposeSecret;
+    let pw = password.expose_secret();
+    let uri = format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        urlencoding_minimal(&body.role),
+        urlencoding_minimal(pw),
+        host,
+        port,
+        database
+    );
+
+    write_audit(
+        &state,
+        Some(&auth.user),
+        audit::ROLE_PASSWORD_CHANGE, // closest existing; reveal is sensitive
+        "credential",
+        Some(&body.role),
+        serde_json::json!({"action": "reveal_connection", "cluster_id": id, "database": database}),
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({
+        "role": body.role,
+        "database": database,
+        "host": host,
+        "port": port,
+        "password": pw,
+        "connection_string": uri,
+        "warning": "Password shown once in this response — store it securely.",
+    })))
+}
+
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 async fn create_cluster(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -89,6 +269,18 @@ async fn create_cluster(
     let enc =
         encrypt_secret(&state.config.master_encryption_key, &admin_password).map_err(AppError)?;
     let now = Utc::now().to_rfc3339();
+
+    // Always provision a default app DB + role so connection strings have a
+    // non-superuser credential out of the box.
+    let mut req = req;
+    if req.initial_databases.is_empty() {
+        req.initial_databases.push(InitialDatabaseSpec {
+            database_name: "app".into(),
+            role_name: "app".into(),
+            password: None,
+        });
+    }
+
     let public_port = if req.expose_publicly {
         req.optional_public_port.map(|p| p as i64)
     } else {
@@ -223,6 +415,15 @@ async fn create_cluster(
 
     let cluster = load_cluster(&state, id).await?;
     let plaintext = admin_password.expose_secret().to_string();
+    let app = req
+        .initial_databases
+        .first()
+        .cloned()
+        .unwrap_or(InitialDatabaseSpec {
+            database_name: "app".into(),
+            role_name: "app".into(),
+            password: None,
+        });
 
     Ok(Json(ClusterCreatedResponse {
         cluster,
@@ -231,8 +432,9 @@ async fn create_cluster(
         connection_info: ConnectionInfo {
             host: names.internal_hostname,
             port: req.optional_public_port.unwrap_or(5432),
-            user: "postgres".into(),
-            database: "postgres".into(),
+            user: app.role_name,
+            database: app.database_name,
+            // App password is generated during provisioning; postgres admin shown once.
             password: Some(plaintext),
         },
     }))

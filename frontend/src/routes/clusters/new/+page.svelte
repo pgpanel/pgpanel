@@ -225,7 +225,8 @@
 		<Card.Header>
 			<Card.Title>Application database & role</Card.Title>
 			<Card.Description>
-				Created automatically after the cluster is healthy. Leave empty to skip.
+				Defaults to database <code class="text-xs">app</code> and role
+				<code class="text-xs">app</code> if left empty — used for connection strings.
 			</Card.Description>
 		</Card.Header>
 		<Card.Content class="grid gap-4 sm:grid-cols-2">

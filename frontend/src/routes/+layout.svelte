@@ -77,6 +77,7 @@
 			browser: 'Browser',
 			query: 'SQL console',
 			backup: 'Backup',
+			timetravel: 'Time travel',
 			wizard: 'Setup wizard',
 			nodes: 'Fleet',
 			monitoring: 'Monitoring',

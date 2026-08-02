@@ -106,11 +106,18 @@ impl DockerClient {
     }
 
     /// Pull a new panel image and recreate the running panel container with it.
+    /// Pulls first while the old panel is still serving, then recreates.
     pub async fn upgrade_panel_image(&self, new_image: &str) -> Result<()> {
+        // Phase 1: pull while old panel stays up (no downtime yet).
         self.pull_panel_image(new_image).await?;
         let _ = self
             .pull_panel_image("ghcr.io/pgpanel/pgpanel:latest")
             .await;
+
+        // Brief pause so the HTTP apply response can flush to the client.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Phase 2: recreate (this kills the current process).
         if !self.recreate_panel_container(new_image).await? {
             return Err(Error::Docker(
                 "panel container not found — run: sudo pgpanel update".into(),

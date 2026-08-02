@@ -288,6 +288,9 @@ fn system_time_to_rfc3339(value: SystemTime) -> Option<String> {
 }
 
 /// Create a compressed tar-format physical base backup through docker exec.
+///
+/// Uses `-X none` because `-X stream` (the default) cannot combine with `-Ft`
+/// and `-D -` (tar to stdout). WAL is archived separately via archive_command.
 pub async fn pg_basebackup_tar(container: &str, password: &str) -> Result<Vec<u8>> {
     let output = Command::new("docker")
         .args([
@@ -302,6 +305,8 @@ pub async fn pg_basebackup_tar(container: &str, password: &str) -> Result<Vec<u8
             "-",
             "-Ft",
             "-z",
+            "-X",
+            "none",
             "-c",
             "fast",
         ])

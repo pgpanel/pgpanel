@@ -106,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = run_alert_tick(&sched_ctx).await {
                 tracing::warn!(error = %e, "alert tick");
             }
+            if let Err(e) = run_metrics_tick(&sched_ctx).await {
+                tracing::warn!(error = %e, "metrics tick");
+            }
         }
     });
 
@@ -462,6 +465,31 @@ async fn run_alert_tick(ctx: &JobContext) -> anyhow::Result<()> {
             )),
         )
         .await;
+    Ok(())
+}
+
+async fn run_metrics_tick(ctx: &JobContext) -> anyhow::Result<()> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM clusters WHERE status IN ('healthy', 'healthy_with_backup_warning', 'degraded', 'starting')",
+    )
+    .fetch_all(&ctx.pool)
+    .await
+    .unwrap_or_default();
+    let minute = chrono::Utc::now().format("%Y%m%d%H%M");
+    for id in ids {
+        let Ok(uuid) = uuid::Uuid::parse_str(&id) else {
+            continue;
+        };
+        let _ = ctx
+            .queue
+            .enqueue(
+                pgpanel_core::models::JobType::RefreshMetrics,
+                Some(uuid),
+                serde_json::json!({}),
+                Some(&format!("metrics-{id}-{minute}")),
+            )
+            .await;
+    }
     Ok(())
 }
 

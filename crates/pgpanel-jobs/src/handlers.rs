@@ -650,11 +650,11 @@ impl JobContext {
                 .await
                 .map_err(|e| Error::Job(e.to_string()))?;
 
-        let database = op
+        let database_spec = op
             .payload
             .get("database")
             .and_then(|v| v.as_str())
-            .unwrap_or("postgres")
+            .unwrap_or("*")
             .to_string();
         let schema_only = op
             .payload
@@ -692,10 +692,101 @@ impl JobContext {
             ),
         };
 
-        self.queue
-            .set_progress(op.id, 20, "running pg_dump")
+        let databases = self
+            .resolve_backup_databases(cluster_id, &container, &username, password.expose_secret(), &database_spec)
             .await?;
+        if databases.is_empty() {
+            return Err(Error::Job("no databases to back up".into()));
+        }
 
+        let mut results = Vec::new();
+        let total = databases.len();
+        for (idx, database) in databases.iter().enumerate() {
+            let pct: u8 = (10 + ((idx as u32 * 80) / total.max(1) as u32)).min(99) as u8;
+            self.queue
+                .set_progress(
+                    op.id,
+                    pct,
+                    &format!("backing up {database} ({}/{total})", idx + 1),
+                )
+                .await?;
+            let one = self
+                .run_one_logical_backup(
+                    op.id,
+                    cluster_id,
+                    &container,
+                    database,
+                    &username,
+                    password.expose_secret(),
+                    schema_only,
+                    encrypt,
+                    &exclude_schemas,
+                    &exclude_tables,
+                )
+                .await?;
+            results.push(one);
+        }
+
+        self.queue
+            .set_progress(op.id, 100, "backup complete")
+            .await?;
+        Ok(serde_json::json!({
+            "databases": results,
+            "count": results.len(),
+            "scope": database_spec,
+        }))
+    }
+
+    async fn resolve_backup_databases(
+        &self,
+        cluster_id: Uuid,
+        container: &str,
+        username: &str,
+        password: &str,
+        database_spec: &str,
+    ) -> Result<Vec<String>> {
+        let spec = database_spec.trim();
+        if spec != "*" && !spec.is_empty() && spec != "__all__" {
+            return Ok(vec![spec.to_string()]);
+        }
+
+        // Prefer live PostgreSQL catalog; fall back to panel registry + postgres.
+        let listed = pgpanel_backup::dump::list_databases(container, username, password).await;
+        if let Ok(dbs) = listed {
+            let filtered: Vec<String> = dbs
+                .into_iter()
+                .filter(|d| d != "template0" && d != "template1")
+                .collect();
+            if !filtered.is_empty() {
+                return Ok(filtered);
+            }
+        }
+
+        let mut dbs: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM databases WHERE cluster_id = ? ORDER BY name")
+                .bind(cluster_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+        if !dbs.iter().any(|d| d == "postgres") {
+            dbs.insert(0, "postgres".into());
+        }
+        Ok(dbs)
+    }
+
+    async fn run_one_logical_backup(
+        &self,
+        op_id: Uuid,
+        cluster_id: Uuid,
+        container: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+        schema_only: bool,
+        encrypt: bool,
+        exclude_schemas: &[&str],
+        exclude_tables: &[&str],
+    ) -> Result<serde_json::Value> {
         let backup_id = Uuid::new_v4();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -708,7 +799,7 @@ impl JobContext {
         } else {
             "logical_full"
         })
-        .bind(&database)
+        .bind(database)
         .bind(if encrypt { 1 } else { 0 })
         .bind(&now)
         .bind(&now)
@@ -716,35 +807,33 @@ impl JobContext {
         .await
         .map_err(|e| Error::Job(e.to_string()))?;
 
-        // Prefer extended dump when filters are present
         let result = if exclude_schemas.is_empty() && exclude_tables.is_empty() {
             self.backup
                 .run_logical_backup(RunLogicalBackupRequest {
                     cluster_id,
-                    container_name: container,
-                    database: database.clone(),
-                    username,
-                    password: password.expose_secret().to_string(),
+                    container_name: container.to_string(),
+                    database: database.to_string(),
+                    username: username.to_string(),
+                    password: password.to_string(),
                     schema_only,
                     encrypt,
                 })
                 .await
         } else {
             use pgpanel_backup::dump::pg_dump_custom_ex;
-            // Stage via engine by dumping then putting — use extended dump then wrap
             let raw = pg_dump_custom_ex(
-                &container,
-                &database,
-                &username,
-                password.expose_secret(),
+                container,
+                database,
+                username,
+                password,
                 schema_only,
-                &exclude_schemas,
-                &exclude_tables,
+                exclude_schemas,
+                exclude_tables,
                 &[],
             )
             .await?;
             self.backup
-                .store_raw_logical(cluster_id, &database, schema_only, encrypt, &raw)
+                .store_raw_logical(cluster_id, database, schema_only, encrypt, &raw)
                 .await
         };
 
@@ -773,11 +862,10 @@ impl JobContext {
                 .await
                 .ok();
 
-                self.queue
-                    .set_progress(op.id, 100, "backup complete")
-                    .await?;
+                let _ = op_id;
                 Ok(serde_json::json!({
                     "backup_id": backup_id,
+                    "database": database,
                     "storage_key": r.storage_key,
                     "size_bytes": r.size_bytes,
                     "checksum": r.checksum_sha256,
@@ -802,7 +890,7 @@ impl JobContext {
                 .execute(&self.pool)
                 .await
                 .ok();
-                Err(Error::Backup(e.to_string()))
+                Err(Error::Backup(format!("{database}: {e}")))
             }
         }
     }

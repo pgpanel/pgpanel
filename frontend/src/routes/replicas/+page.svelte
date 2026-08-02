@@ -14,6 +14,8 @@
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
+	import ClusterSelect from '$lib/components/cluster-select.svelte';
+	import NodeSelect from '$lib/components/node-select.svelte';
 	import * as Select from '$lib/components/ui/select/index.js';
 	import { toast } from 'svelte-sonner';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
@@ -216,16 +218,7 @@
 			<form class="space-y-4" onsubmit={createReplica}>
 				<div class="space-y-2">
 					<Label>Primary cluster</Label>
-					<Select.Root type="single" bind:value={primary_cluster_id}>
-						<Select.Trigger class="w-full">
-							{clusterLabel(primary_cluster_id) || 'Select cluster'}
-						</Select.Trigger>
-						<Select.Content>
-							{#each clusters as c (c.id)}
-								<Select.Item value={c.id} label={c.name}>{c.name}</Select.Item>
-							{/each}
-						</Select.Content>
-					</Select.Root>
+					<ClusterSelect class="w-full" bind:value={primary_cluster_id} />
 				</div>
 				<div class="space-y-2">
 					<Label for="replica-name">Name</Label>
@@ -233,16 +226,7 @@
 				</div>
 				<div class="space-y-2">
 					<Label>Target node</Label>
-					<Select.Root type="single" bind:value={target_node_id}>
-						<Select.Trigger class="w-full">
-							{nodeLabel(target_node_id) || 'Select node'}
-						</Select.Trigger>
-						<Select.Content>
-							{#each nodes as n (n.id)}
-								<Select.Item value={n.id} label={n.name}>{n.name}</Select.Item>
-							{/each}
-						</Select.Content>
-					</Select.Root>
+					<NodeSelect class="w-full" bind:value={target_node_id} />
 				</div>
 				<div class="space-y-2">
 					<Label>Mode</Label>

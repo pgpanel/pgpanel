@@ -147,10 +147,12 @@ async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
     let image = format!("ghcr.io/pgpanel/pgpanel:{v}");
     let image_for_task = image.clone();
 
-    // Pull + recreate kills this process — run in background and respond immediately
-    // so Caddy/proxy does not surface a 502 to the browser.
+    // Pull happens in background; recreate kills this process after images are ready.
+    // Respond immediately so the browser gets a clean JSON body (not a mid-flight 502).
     let docker = s.provisioner.docker().clone();
     tokio::spawn(async move {
+        // Extra delay: let the apply response leave the socket before we stop ourselves.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if let Err(e) = docker.upgrade_panel_image(&image_for_task).await {
             error!(error = %e, image = %image_for_task, "panel in-place upgrade failed");
         }
@@ -158,8 +160,9 @@ async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
 
     Ok(Json(serde_json::json!({
         "status": "started",
-        "message": "Update started. The panel will pull the new image and restart — refresh in about a minute.",
+        "message": "Update started. Images will download first, then the panel restarts automatically — keep this tab open.",
         "version": v,
         "image": image,
+        "poll_health": true,
     })))
 }

@@ -257,6 +257,46 @@ pub async fn pg_restore_custom(
     Ok(())
 }
 
+/// List non-template databases inside a cluster container.
+pub async fn list_databases(
+    container: &str,
+    username: &str,
+    password: &str,
+) -> Result<Vec<String>> {
+    assert_safe_ident(username, "username")?;
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-e",
+            &format!("PGPASSWORD={password}"),
+            container,
+            "psql",
+            "-U",
+            username,
+            "-d",
+            "postgres",
+            "-At",
+            "-c",
+            "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| Error::Internal(format!("docker exec psql: {e}")))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Internal(format!("list databases failed: {err}")));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Stream dump bytes into container via `docker exec -i` + cat (fallback path).
 #[allow(dead_code)]
 pub async fn write_bytes_via_stdin(container: &str, remote_path: &str, data: &[u8]) -> Result<()> {

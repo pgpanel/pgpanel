@@ -11,6 +11,7 @@
 		fetchUpdateStatus,
 		checkForUpdates,
 		applyUpdate,
+		waitForPanelRecovery,
 		updateChecking,
 		updateError
 	} from '$lib/updates';
@@ -93,6 +94,7 @@
 	let updates = $state<UpdateStatus | null>(null);
 	let applyOpen = $state(false);
 	let applying = $state(false);
+	let updateOverlay = $state(false);
 	let revokeTokenId = $state<string | null>(null);
 	let revokeOpen = $state(false);
 
@@ -176,9 +178,32 @@
 		applying = true;
 		try {
 			const result = await applyUpdate();
-			toast.success(result.message ?? 'Update started — the panel may restart shortly');
-			setTimeout(() => fetchUpdateStatus(), 3000);
+
+			if (result.status === 'up_to_date') {
+				toast.success(result.message ?? 'Already on the latest version');
+				return;
+			}
+
+			if (result.status === 'started' || result.poll_health) {
+				updateOverlay = true;
+				const recovered = await waitForPanelRecovery();
+				if (recovered) {
+					toast.success('Panel updated — reconnected successfully');
+					updates = await fetchUpdateStatus();
+					updateOverlay = false;
+					window.location.reload();
+				} else {
+					updateOverlay = false;
+					toast.error(
+						'Panel did not come back in time. Refresh this page manually or run: sudo pgpanel update'
+					);
+				}
+			} else {
+				toast.success(result.message ?? 'Update started — the panel may restart shortly');
+				setTimeout(() => fetchUpdateStatus(), 3000);
+			}
 		} catch (e) {
+			updateOverlay = false;
 			toast.error(e instanceof Error ? e.message : 'Update failed');
 		} finally {
 			applying = false;
@@ -708,3 +733,21 @@
 	loading={applying}
 	onConfirm={handleApplyUpdate}
 />
+
+{#if updateOverlay}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+		role="alertdialog"
+		aria-live="polite"
+		aria-busy="true"
+		aria-label="Panel update in progress"
+	>
+		<div class="mx-4 max-w-md rounded-xl border border-border/60 bg-popover p-8 text-center shadow-lg">
+			<HugeiconsIcon icon={RefreshIcon} class="mx-auto mb-4 size-10 animate-spin text-primary" strokeWidth={2} />
+			<h2 class="mb-2 text-lg font-semibold">Updating…</h2>
+			<p class="text-sm text-muted-foreground">
+				Downloading image, then restarting. This tab will reconnect automatically.
+			</p>
+		</div>
+	</div>
+{/if}

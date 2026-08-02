@@ -10,6 +10,7 @@ pub const DATABASE_CREATE: &str = "database.create";
 pub const DATABASE_DELETE: &str = "database.delete";
 pub const ROLE_CREATE: &str = "role.create";
 pub const ROLE_DELETE: &str = "role.delete";
+pub const ROLE_UPDATE: &str = "role.update";
 pub const ROLE_PASSWORD_CHANGE: &str = "role.password_change";
 pub const PORT_PUBLISH: &str = "cluster.port_publish";
 pub const BACKUP_CONFIG: &str = "backup.config_change";

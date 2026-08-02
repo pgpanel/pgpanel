@@ -32,6 +32,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(change_password),
         )
         .route(
+            "/api/clusters/{id}/roles/{role}/databases",
+            get(list_role_databases).put(set_role_databases),
+        )
+        .route(
             "/api/clusters/{id}/roles/{role}",
             axum::routing::delete(delete_role),
         )
@@ -174,49 +178,195 @@ async fn create_role(
     Path(id): Path<Uuid>,
     Json(req): Json<CreateRoleRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    // Create role without DB via create_database path is awkward;
-    // enqueue as create_database is not right. For MVP, create role through
-    // a password rotate-style job isn't available — use CreateDatabase job
-    // pattern with a dedicated payload by reusing CreateDatabase with same names
-    // is wrong. We'll enqueue RotatePassword-style via CreateDatabase minimal.
-    // Simpler: treat as create_database without creating DB using job type CreateDatabase
-    // is not ideal. For MVP map to create with temp approach:
-
     validate_safe_name(&req.role_name, "role_name").map_err(AppError)?;
-    let _ = load_cluster(&state, id).await?;
+    let cluster = load_cluster(&state, id).await?;
 
-    let role_name = req.role_name.clone();
-    let payload = serde_json::json!({
-        "database_name": format!("{}_db", role_name),
-        "role_name": role_name,
-        "generate_password": req.generate_password,
-        "password": req.password,
-        "connection_limit": req.connection_limit,
-    });
+    let password = if req.generate_password || req.password.as_ref().map(|p| p.is_empty()).unwrap_or(true) {
+        pgpanel_core::crypto::generate_password()
+    } else {
+        let p = req.password.clone().unwrap_or_default();
+        if p.len() < 8 {
+            return Err(AppError(Error::Validation(
+                "password must be at least 8 characters".into(),
+            )));
+        }
+        secrecy::SecretString::from(p)
+    };
 
-    // MVP: creates role plus companion database `{role}_db`.
-    let op = state
-        .queue
-        .enqueue(JobType::CreateDatabase, Some(id), payload, None)
+    let client = connect_admin(&state, &cluster).await?;
+    let roles = pgpanel_postgres::RoleService::new(&client);
+    if roles.role_exists(&req.role_name).await.map_err(AppError)? {
+        return Err(AppError(Error::Conflict(format!(
+            "role {} already exists",
+            req.role_name
+        ))));
+    }
+    roles
+        .create_role(&req.role_name, &password, req.connection_limit)
         .await
         .map_err(AppError)?;
+
+    let role_id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO database_roles (id, cluster_id, name, is_superuser, can_login, connection_limit, created_at) VALUES (?,?,?,?,?,?,?)",
+    )
+    .bind(&role_id)
+    .bind(id.to_string())
+    .bind(&req.role_name)
+    .bind(0)
+    .bind(1)
+    .bind(req.connection_limit.map(|n| n as i64))
+    .bind(&now)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+
+    let enc = pgpanel_core::crypto::encrypt_secret(
+        &state.config.master_encryption_key,
+        &password,
+    )
+    .map_err(AppError)?;
+    sqlx::query(
+        "INSERT INTO cluster_credentials (id, cluster_id, role_name, username, password_encrypted, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(cluster_id, role_name) DO UPDATE SET password_encrypted=excluded.password_encrypted, updated_at=excluded.updated_at",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(id.to_string())
+    .bind(&req.role_name)
+    .bind(&req.role_name)
+    .bind(enc)
+    .bind("app")
+    .bind(&now)
+    .bind(&now)
+    .execute(&state.pool)
+    .await
+    .ok();
 
     write_audit(
         &state,
         Some(&auth.user),
         audit::ROLE_CREATE,
         "role",
-        Some(&role_name),
+        Some(&req.role_name),
         serde_json::json!({"cluster_id": id}),
         None,
         None,
     )
     .await;
 
+    use secrecy::ExposeSecret;
     Ok(Json(serde_json::json!({
-        "operation_id": op,
-        "note": "MVP creates role with companion database {role}_db"
+        "id": role_id,
+        "role_name": req.role_name,
+        "password": password.expose_secret(),
     })))
+}
+
+#[derive(serde::Deserialize)]
+struct RoleDatabasesBody {
+    databases: Vec<String>,
+}
+
+async fn list_role_databases(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path((id, role)): Path<(Uuid, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    validate_safe_name(&role, "role").map_err(AppError)?;
+    let cluster = load_cluster(&state, id).await?;
+    let client = connect_admin(&state, &cluster).await?;
+    let dbs = pgpanel_postgres::RoleService::new(&client)
+        .list_connectable_databases(&role)
+        .await
+        .map_err(AppError)?;
+    Ok(Json(serde_json::json!({ "databases": dbs })))
+}
+
+async fn set_role_databases(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, role)): Path<(Uuid, String)>,
+    Json(body): Json<RoleDatabasesBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    validate_safe_name(&role, "role").map_err(AppError)?;
+    for db in &body.databases {
+        validate_safe_name(db, "database").map_err(AppError)?;
+    }
+    let cluster = load_cluster(&state, id).await?;
+    let client = connect_admin(&state, &cluster).await?;
+    pgpanel_postgres::RoleService::new(&client)
+        .set_database_access(&role, &body.databases)
+        .await
+        .map_err(AppError)?;
+
+    write_audit(
+        &state,
+        Some(&auth.user),
+        audit::ROLE_UPDATE,
+        "role",
+        Some(&role),
+        serde_json::json!({"cluster_id": id, "databases": body.databases}),
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({
+        "role": role,
+        "databases": body.databases,
+    })))
+}
+
+async fn connect_admin(
+    state: &AppState,
+    cluster: &pgpanel_core::models::Cluster,
+) -> Result<pgpanel_postgres::PgClient, AppError> {
+    use pgpanel_core::crypto::decrypt_secret;
+    use pgpanel_postgres::PgClient;
+
+    let enc: String = sqlx::query_scalar(
+        "SELECT password_encrypted FROM cluster_credentials WHERE cluster_id = ? AND role_name = 'postgres'",
+    )
+    .bind(cluster.id.to_string())
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+
+    let password = decrypt_secret(&state.config.master_encryption_key, &enc).map_err(AppError)?;
+    let host = &cluster.internal_hostname;
+    match PgClient::connect(
+        host,
+        5432,
+        "postgres",
+        &password,
+        "postgres",
+        state.config.default_statement_timeout_ms,
+        state.config.default_lock_timeout_ms,
+    )
+    .await
+    {
+        Ok(c) => Ok(c),
+        Err(_) => {
+            if let Some(port) = cluster.public_port {
+                PgClient::connect(
+                    "127.0.0.1",
+                    port,
+                    "postgres",
+                    &password,
+                    "postgres",
+                    state.config.default_statement_timeout_ms,
+                    state.config.default_lock_timeout_ms,
+                )
+                .await
+                .map_err(AppError)
+            } else {
+                Err(AppError(Error::Postgres(
+                    "cannot connect to cluster".into(),
+                )))
+            }
+        }
+    }
 }
 
 async fn change_password(

@@ -4,6 +4,7 @@
 	import { api, type Cluster } from '$lib/api';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
+	import ConnectionStringCard from '$lib/components/connection-string-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
@@ -14,11 +15,6 @@
 		PlayIcon,
 		StopIcon,
 		RefreshIcon,
-		DatabaseIcon,
-		TableIcon,
-		CodeIcon,
-		CloudBackupIcon,
-		DatabaseSyncIcon,
 		Alert02Icon
 	} from '@hugeicons/core-free-icons';
 
@@ -53,13 +49,6 @@
 		}
 	}
 
-	const links = $derived([
-		{ href: `/clusters/${id}/databases`, label: 'Databases', icon: DatabaseIcon },
-		{ href: `/clusters/${id}/browser`, label: 'Browser', icon: TableIcon },
-		{ href: `/clusters/${id}/query`, label: 'SQL console', icon: CodeIcon },
-		{ href: `/clusters/${id}/backup`, label: 'Backups', icon: CloudBackupIcon },
-		{ href: `/replicas?cluster=${id}`, label: 'Replicas', icon: DatabaseSyncIcon }
-	]);
 </script>
 
 {#if cluster}
@@ -88,31 +77,15 @@
 		</Alert.Root>
 	{/if}
 
-	<div class="mb-6 flex flex-wrap gap-2">
-		{#each links as l (l.href)}
-			<Button variant="secondary" href={l.href}>
-				<HugeiconsIcon icon={l.icon} class="size-4" strokeWidth={2} />
-				{l.label}
-			</Button>
-		{/each}
-	</div>
-
 	<div class="grid gap-4 md:grid-cols-2">
+		<ConnectionStringCard clusterId={id} />
+
 		<Card.Root class="border-border/60">
 			<Card.Header>
-				<Card.Title>Connection & resources</Card.Title>
+				<Card.Title>Resources</Card.Title>
+				<Card.Description>Container limits and platform status</Card.Description>
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
-				<div class="flex justify-between gap-4">
-					<span class="text-muted-foreground">Internal host</span>
-					<span class="font-mono text-right">{cluster.internal_hostname ?? '—'}</span>
-				</div>
-				<Separator />
-				<div class="flex justify-between gap-4">
-					<span class="text-muted-foreground">Public port</span>
-					<span>{cluster.public_port ?? 'not exposed'}</span>
-				</div>
-				<Separator />
 				<div class="flex justify-between gap-4">
 					<span class="text-muted-foreground">CPU / Memory</span>
 					<span>{cluster.cpu_limit} / {cluster.memory_mb} MB</span>

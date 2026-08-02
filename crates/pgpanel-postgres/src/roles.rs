@@ -84,6 +84,73 @@ impl<'a> RoleService<'a> {
         Ok(())
     }
 
+    /// Databases the role can CONNECT to (non-template).
+    pub async fn list_connectable_databases(&self, role_name: &str) -> Result<Vec<String>> {
+        validate_safe_name(role_name, "role_name")?;
+        let rows = sqlx::query(
+            r#"
+            SELECT datname
+            FROM pg_database
+            WHERE datistemplate = false
+              AND has_database_privilege($1, datname, 'CONNECT')
+            ORDER BY datname
+            "#,
+        )
+        .bind(role_name)
+        .fetch_all(self.client.pool())
+        .await
+        .map_err(|e| Error::Postgres(format!("list role databases: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.try_get::<String, _>("datname").ok())
+            .collect())
+    }
+
+    /// Set CONNECT privilege for a role across databases (non-system).
+    pub async fn set_database_access(
+        &self,
+        role_name: &str,
+        allowed_databases: &[String],
+    ) -> Result<()> {
+        validate_safe_name(role_name, "role_name")?;
+        if role_name == "postgres" {
+            return Err(Error::Forbidden(
+                "cannot change postgres superuser database access".into(),
+            ));
+        }
+        let role_ident = quote_ident(role_name)?;
+        let all_dbs = sqlx::query(
+            "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
+        )
+        .fetch_all(self.client.pool())
+        .await
+        .map_err(|e| Error::Postgres(format!("list databases: {e}")))?;
+
+        let allowed: std::collections::HashSet<&str> =
+            allowed_databases.iter().map(|s| s.as_str()).collect();
+
+        for row in all_dbs {
+            let db: String = row
+                .try_get("datname")
+                .map_err(|e| Error::Postgres(format!("datname: {e}")))?;
+            if db == "template0" || db == "template1" {
+                continue;
+            }
+            validate_safe_name(&db, "database")?;
+            let db_ident = quote_ident(&db)?;
+            let sql = if allowed.contains(db.as_str()) {
+                format!("GRANT CONNECT, TEMPORARY ON DATABASE {db_ident} TO {role_ident}")
+            } else {
+                format!("REVOKE CONNECT, TEMPORARY ON DATABASE {db_ident} FROM {role_ident}")
+            };
+            sqlx::query(&sql)
+                .execute(self.client.pool())
+                .await
+                .map_err(|e| Error::Postgres(format!("set database access: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Create database owned by role. CREATE DATABASE cannot run in a transaction.
     pub async fn create_database(
         &self,

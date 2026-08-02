@@ -52,6 +52,45 @@ export interface ApplyUpdateResult {
 	message?: string;
 	version?: string;
 	image?: string;
+	poll_health?: boolean;
+}
+
+const RECOVERY_ENDPOINTS = ['/api/health', '/health', '/api/updates/status'] as const;
+
+async function probePanelHealth(): Promise<boolean> {
+	for (const path of RECOVERY_ENDPOINTS) {
+		try {
+			const res = await fetch(path, { credentials: 'include' });
+			if (res.ok) {
+				await res.json();
+				return true;
+			}
+			if (res.status === 502 || res.status === 503) continue;
+		} catch {
+			/* network error — panel still down */
+		}
+	}
+	return false;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll until the panel responds again after an in-place upgrade restart. */
+export async function waitForPanelRecovery(opts?: {
+	timeoutMs?: number;
+	intervalMs?: number;
+}): Promise<boolean> {
+	const timeoutMs = opts?.timeoutMs ?? 5 * 60 * 1000;
+	const intervalMs = opts?.intervalMs ?? 3000;
+	const deadline = Date.now() + timeoutMs;
+
+	while (Date.now() < deadline) {
+		if (await probePanelHealth()) return true;
+		await sleep(intervalMs);
+	}
+	return false;
 }
 
 export async function applyUpdate(): Promise<ApplyUpdateResult> {

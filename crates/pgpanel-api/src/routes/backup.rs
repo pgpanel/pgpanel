@@ -51,7 +51,7 @@ struct TriggerBody {
 }
 
 fn default_db() -> String {
-    "postgres".into()
+    "*".into()
 }
 
 async fn backup_status(
@@ -160,7 +160,7 @@ async fn trigger(
 ) -> ApiResult<Json<serde_json::Value>> {
     let _ = load_cluster(&state, id).await?;
     let body = body.map(|j| j.0).unwrap_or(TriggerBody {
-        database: "postgres".into(),
+        database: "*".into(),
         schema_only: false,
         exclude_schemas: String::new(),
         exclude_tables: String::new(),

@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { Input } from '$lib/components/ui/input/index.js';
+	import DatabaseSelect from '$lib/components/database-select.svelte';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
@@ -11,7 +11,7 @@
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
-	import { ArrowLeft01Icon, Alert02Icon, PlayIcon } from '@hugeicons/core-free-icons';
+	import { Alert02Icon, PlayIcon } from '@hugeicons/core-free-icons';
 
 	interface SqlResult {
 		columns: string[];
@@ -45,13 +45,6 @@
 	}
 </script>
 
-<div class="mb-2">
-	<Button variant="ghost" size="sm" href={`/clusters/${id}`}>
-		<HugeiconsIcon icon={ArrowLeft01Icon} class="size-4" strokeWidth={2} />
-		Back to cluster
-	</Button>
-</div>
-
 <PageHeader
 	title="SQL console"
 	description="Read-only: SELECT / EXPLAIN / SHOW / WITH…SELECT · parser + READ ONLY transaction"
@@ -62,7 +55,7 @@
 		<div class="flex flex-wrap items-end gap-4">
 			<div class="space-y-1.5">
 				<Label for="db">Database</Label>
-				<Input id="db" class="w-48 font-mono" bind:value={database} />
+				<DatabaseSelect id="db" clusterId={id} class="w-48" bind:value={database} />
 			</div>
 			<Button onclick={run} disabled={loading}>
 				<HugeiconsIcon icon={PlayIcon} class="size-4" strokeWidth={2} />

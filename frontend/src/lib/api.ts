@@ -606,11 +606,42 @@ export interface OperationIdResponse {
 	operation_id: string;
 }
 
+export interface ClusterConnectionInfo {
+	cluster_id: string;
+	internal_host: string;
+	public_port: number | null;
+	default_port: number;
+	default_role: string;
+	default_database: string;
+	roles: string[];
+	databases: { name: string; owner_role: string }[];
+}
+
+export interface ClusterConnectionRevealResponse {
+	role: string;
+	database: string;
+	host: string;
+	port: number;
+	password: string;
+	connection_string: string;
+	warning: string;
+}
+
 export interface DatabaseRecord {
 	id: string;
 	name: string;
 	owner_role: string;
 	connection_limit: number | null;
+}
+
+export interface RoleRecord {
+	id: string;
+	cluster_id: string;
+	name: string;
+	is_superuser: boolean;
+	can_login: boolean;
+	connection_limit: number | null;
+	created_at: string;
 }
 
 export interface TableInfo {
