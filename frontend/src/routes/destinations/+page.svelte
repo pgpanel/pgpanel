@@ -4,6 +4,7 @@
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -33,6 +34,8 @@
 	let saving = $state(false);
 	let testing = $state<string | null>(null);
 	let editingId = $state<string | null>(null);
+	let deleteOpen = $state(false);
+	let deleteTarget = $state<BackupDestination | null>(null);
 
 	let name = $state('');
 	let storage_type = $state('s3');
@@ -157,12 +160,18 @@
 		}
 	}
 
-	async function deleteDestination(d: BackupDestination) {
-		if (!confirm(`Delete destination "${d.name}"?`)) return;
+	function askDeleteDestination(d: BackupDestination) {
+		deleteTarget = d;
+		deleteOpen = true;
+	}
+
+	async function confirmDeleteDestination() {
+		if (!deleteTarget) return;
 		try {
-			await api(`/api/backup-destinations/${d.id}`, { method: 'DELETE' });
+			await api(`/api/backup-destinations/${deleteTarget.id}`, { method: 'DELETE' });
 			toast.success('Destination deleted');
-			if (editingId === d.id) resetForm();
+			if (editingId === deleteTarget.id) resetForm();
+			deleteTarget = null;
 			await load();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Delete failed');
@@ -371,7 +380,7 @@
 											variant="ghost"
 											size="sm"
 											class="text-destructive hover:text-destructive"
-											onclick={() => deleteDestination(d)}
+											onclick={() => askDeleteDestination(d)}
 										>
 											<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 										</Button>
@@ -385,3 +394,12 @@
 		</Card.Content>
 	</Card.Root>
 </div>
+
+<ConfirmDialog
+	bind:open={deleteOpen}
+	title="Delete destination?"
+	description={deleteTarget ? `Delete "${deleteTarget.name}"?` : ''}
+	confirmLabel="Delete"
+	variant="destructive"
+	onConfirm={confirmDeleteDestination}
+/>

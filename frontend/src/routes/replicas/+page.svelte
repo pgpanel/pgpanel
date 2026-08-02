@@ -6,6 +6,7 @@
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -32,6 +33,10 @@
 	let loading = $state(true);
 	let creating = $state(false);
 	let busy = $state<string | null>(null);
+	let promoteOpen = $state(false);
+	let promoteTargetId = $state<string | null>(null);
+	let deleteOpen = $state(false);
+	let deleteTarget = $state<ClusterReplica | null>(null);
 
 	const clusterFilter = $derived($page.url.searchParams.get('cluster') ?? '');
 
@@ -126,15 +131,21 @@
 		}
 	}
 
-	async function promoteReplica(id: string) {
-		if (!confirm('Promote this replica to primary? This is a destructive failover operation.')) return;
-		busy = id;
+	function askPromoteReplica(id: string) {
+		promoteTargetId = id;
+		promoteOpen = true;
+	}
+
+	async function confirmPromoteReplica() {
+		if (!promoteTargetId) return;
+		busy = promoteTargetId;
 		try {
-			const res = await api<{ operation_id: string }>(`/api/replicas/${id}/promote`, {
+			const res = await api<{ operation_id: string }>(`/api/replicas/${promoteTargetId}/promote`, {
 				method: 'POST'
 			});
 			trackOperation(res.operation_id, { title: 'Promote replica', onDone: () => load() });
 			toast.success('Promotion queued');
+			promoteTargetId = null;
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Promote failed');
 		} finally {
@@ -142,11 +153,17 @@
 		}
 	}
 
-	async function deleteReplica(r: ClusterReplica) {
-		if (!confirm(`Delete replica "${r.name}"?`)) return;
+	function askDeleteReplica(r: ClusterReplica) {
+		deleteTarget = r;
+		deleteOpen = true;
+	}
+
+	async function confirmDeleteReplica() {
+		if (!deleteTarget) return;
 		try {
-			await api(`/api/replicas/${r.id}`, { method: 'DELETE' });
+			await api(`/api/replicas/${deleteTarget.id}`, { method: 'DELETE' });
 			toast.success('Replica deleted');
+			deleteTarget = null;
 			await load();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Delete failed');
@@ -327,7 +344,7 @@
 											variant="ghost"
 											size="sm"
 											disabled={busy === r.id}
-											onclick={() => promoteReplica(r.id)}
+											onclick={() => askPromoteReplica(r.id)}
 										>
 											<HugeiconsIcon icon={ArrowUp01Icon} class="size-4" strokeWidth={2} />
 											Promote
@@ -336,7 +353,7 @@
 											variant="ghost"
 											size="sm"
 											class="text-destructive hover:text-destructive"
-											onclick={() => deleteReplica(r)}
+											onclick={() => askDeleteReplica(r)}
 										>
 											<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 										</Button>
@@ -350,3 +367,21 @@
 		</Card.Content>
 	</Card.Root>
 </div>
+
+<ConfirmDialog
+	bind:open={promoteOpen}
+	title="Promote replica to primary?"
+	description="This is a destructive failover operation. The replica will become the new primary cluster."
+	confirmLabel="Promote"
+	variant="destructive"
+	onConfirm={confirmPromoteReplica}
+/>
+
+<ConfirmDialog
+	bind:open={deleteOpen}
+	title="Delete replica?"
+	description={deleteTarget ? `Delete replica "${deleteTarget.name}"?` : ''}
+	confirmLabel="Delete"
+	variant="destructive"
+	onConfirm={confirmDeleteReplica}
+/>

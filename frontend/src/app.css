@@ -8,23 +8,23 @@
 /* PgPanel: dark-first with emerald primary (PostgreSQL-inspired) */
 :root,
 .dark {
-	--background: oklch(0.14 0.01 160);
+	--background: oklch(0.13 0.012 160);
 	--foreground: oklch(0.97 0.005 160);
-	--card: oklch(0.18 0.012 160);
+	--card: oklch(0.17 0.014 160);
 	--card-foreground: oklch(0.97 0.005 160);
-	--popover: oklch(0.18 0.012 160);
+	--popover: oklch(0.19 0.014 160);
 	--popover-foreground: oklch(0.97 0.005 160);
 	--primary: oklch(0.72 0.17 155);
 	--primary-foreground: oklch(0.16 0.03 155);
-	--secondary: oklch(0.24 0.015 160);
+	--secondary: oklch(0.22 0.016 160);
 	--secondary-foreground: oklch(0.95 0.01 160);
-	--muted: oklch(0.24 0.012 160);
-	--muted-foreground: oklch(0.68 0.02 160);
-	--accent: oklch(0.26 0.03 155);
+	--muted: oklch(0.22 0.014 160);
+	--muted-foreground: oklch(0.65 0.022 160);
+	--accent: oklch(0.24 0.032 155);
 	--accent-foreground: oklch(0.92 0.04 155);
-	--destructive: oklch(0.65 0.2 25);
-	--border: oklch(1 0 0 / 10%);
-	--input: oklch(1 0 0 / 12%);
+	--destructive: oklch(0.62 0.2 25);
+	--border: oklch(1 0 0 / 11%);
+	--input: oklch(1 0 0 / 13%);
 	--ring: oklch(0.72 0.17 155);
 	--chart-1: oklch(0.72 0.17 155);
 	--chart-2: oklch(0.7 0.12 220);
@@ -32,7 +32,7 @@
 	--chart-4: oklch(0.65 0.18 25);
 	--chart-5: oklch(0.6 0.1 300);
 	--radius: 0.65rem;
-	--sidebar: oklch(0.12 0.012 160);
+	--sidebar: oklch(0.11 0.014 160);
 	--sidebar-foreground: oklch(0.92 0.01 160);
 	--sidebar-primary: oklch(0.72 0.17 155);
 	--sidebar-primary-foreground: oklch(0.16 0.03 155);
@@ -93,6 +93,33 @@
 	body {
 		@apply bg-background text-foreground min-h-screen;
 	}
+}
+
+/* Shell atmosphere + page utilities */
+.shell-inset {
+	background:
+		radial-gradient(ellipse 90% 60% at 50% -10%, oklch(0.35 0.08 155 / 0.12), transparent 55%),
+		var(--background);
+}
+
+.page-frame {
+	@apply min-w-0;
+}
+
+.page-card {
+	@apply border-border/70 bg-card/80 shadow-sm shadow-black/10 backdrop-blur-sm;
+}
+
+.kpi-tile {
+	@apply transition-colors hover:border-primary/25 hover:bg-card;
+}
+
+.table-scroll {
+	@apply overflow-x-auto;
+}
+
+.table-scroll table {
+	@apply min-w-full;
 }
 
 /* Subtle grid for auth pages */

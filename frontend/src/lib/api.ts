@@ -371,6 +371,17 @@ export interface Alert {
 	resolved_at: string | null;
 }
 
+export interface MonitoringNodeRow {
+	node_id: string;
+	name: string;
+	status: string;
+	cluster_count: number;
+	avg_cpu?: number;
+	cpu_percent?: number;
+	memory_mb?: number;
+	max_clusters?: number | null;
+}
+
 export interface MonitoringOverview {
 	cluster_count: number;
 	healthy_count: number;
@@ -383,6 +394,70 @@ export interface MonitoringOverview {
 	replica_total: number;
 	series: MonitoringPoint[];
 	top_clusters: ClusterLoadRow[];
+	max_cpu_24h?: number;
+	max_memory_mb_24h?: number;
+	node_count?: number;
+	online_nodes?: number;
+	operations_failed_24h?: number;
+	operations_running?: number;
+	databases_total?: number;
+	/** 0..1 fraction from backend */
+	backup_success_rate?: number;
+	nodes?: MonitoringNodeRow[];
+	hours?: number;
+}
+
+export interface FleetRemoteAccess {
+	enabled: boolean;
+	public_base_url: string | null;
+	has_token?: boolean;
+	token_prefix?: string | null;
+	join_url: string | null;
+	join_token: string | null;
+	updated_at?: string;
+}
+
+export interface FleetInvite {
+	id: string;
+	token: string;
+	token_prefix?: string;
+	join_url: string;
+	label?: string;
+	created_at: string;
+	expires_at: string | null;
+	used_at: string | null;
+	revoked_at?: string | null;
+	used?: boolean;
+	revoked?: boolean;
+}
+
+export interface FleetPeer {
+	id: string;
+	name: string;
+	base_url: string;
+	status: string;
+	last_seen_at: string | null;
+	cluster_count?: number;
+	advertised_capacity?: number | null;
+	max_clusters?: number | null;
+	last_ping_ms?: number | null;
+}
+
+export interface FleetJoinRequest {
+	base_url: string;
+	token: string;
+	local_name?: string;
+}
+
+export interface UpdateStatus {
+	current_version: string;
+	latest_version: string | null;
+	latest_url?: string | null;
+	update_available: boolean;
+	channel?: string;
+	last_checked_at: string | null;
+	can_apply?: boolean;
+	changelog?: string | null;
 }
 
 export interface MonitoringPoint {
@@ -473,6 +548,16 @@ export function statusVariant(status: string): BadgeVariant {
 	if (s === 'failed' || s === 'deleting' || s === 'error' || s === 'unhealthy') return 'destructive';
 	if (s === 'succeeded' || s === 'success') return 'default';
 	return 'outline';
+}
+
+/** Display cluster capacity — empty/null/<=0 max means unlimited */
+export function formatNodeCapacity(count: number, max: number | null | undefined): string {
+	const unlimited = max == null || max <= 0;
+	return unlimited ? `${count} / Unlimited` : `${count} / ${max}`;
+}
+
+export function isUnlimitedCapacity(max: number | null | undefined): boolean {
+	return max == null || max <= 0;
 }
 
 export function formatRelative(iso: string): string {

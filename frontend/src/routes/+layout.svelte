@@ -5,38 +5,42 @@
 	import { goto } from '$app/navigation';
 	import { authReady, refreshMe, user } from '$lib/auth';
 	import { api } from '$lib/api';
+	import { isWizardMarkedDone, markWizardDone, wizardNeeded as wizardNeededStore } from '$lib/wizard';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
 	import { Toaster } from '$lib/components/ui/sonner/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
+	import UpdateBanner from '$lib/components/update-banner.svelte';
+	import { fetchUpdateStatus } from '$lib/updates';
 
 	let { children } = $props();
 
 	const publicPaths = ['/login', '/setup'];
-	let wizardChecked = $state(false);
-	let wizardNeeded = $state(false);
 
 	onMount(async () => {
 		await refreshMe();
+		fetchUpdateStatus();
 	});
 
 	async function checkWizard() {
-		if (wizardChecked) return wizardNeeded;
-		if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('pgpanel_wizard_done') === '1') {
-			wizardChecked = true;
-			wizardNeeded = false;
+		if (isWizardMarkedDone()) {
+			wizardNeededStore.set(false);
 			return false;
 		}
-		wizardChecked = true;
+		const cached = $wizardNeededStore;
+		if (cached !== null) return cached;
 		try {
 			const s = await api<{ wizard_completed: boolean }>('/api/settings/wizard');
-			wizardNeeded = !s.wizard_completed;
+			const need = !s.wizard_completed;
+			wizardNeededStore.set(need);
+			if (!need) markWizardDone();
+			return need;
 		} catch {
-			wizardNeeded = false;
+			wizardNeededStore.set(false);
+			return false;
 		}
-		return wizardNeeded;
 	}
 
 	$effect(() => {
@@ -73,7 +77,14 @@
 			browser: 'Browser',
 			query: 'SQL console',
 			backup: 'Backup',
-			wizard: 'Setup wizard'
+			wizard: 'Setup wizard',
+			nodes: 'Nodes',
+			monitoring: 'Monitoring',
+			replicas: 'Replicas',
+			destinations: 'Destinations',
+			alerts: 'Alerts',
+			waf: 'WAF',
+			users: 'Users'
 		};
 		const out: { label: string; href: string }[] = [];
 		let acc = '';
@@ -104,13 +115,13 @@
 {:else if $user}
 	<Sidebar.Provider>
 		<AppSidebar />
-		<Sidebar.Inset>
+		<Sidebar.Inset class="shell-inset">
 			<header
-				class="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+				class="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md supports-[backdrop-filter]:bg-background/70"
 			>
 				<Sidebar.Trigger class="-ms-1" />
 				<Separator orientation="vertical" class="mx-1 data-[orientation=vertical]:h-4" />
-				<Breadcrumb.Root>
+				<Breadcrumb.Root class="min-w-0 flex-1">
 					<Breadcrumb.List>
 						{#each crumb as c, i}
 							<Breadcrumb.Item>
@@ -128,7 +139,10 @@
 				</Breadcrumb.Root>
 			</header>
 			<div class="flex flex-1 flex-col gap-4 p-4 md:p-6 lg:p-8">
-				{@render children()}
+				<UpdateBanner />
+				<main class="page-frame flex-1">
+					{@render children()}
+				</main>
 			</div>
 		</Sidebar.Inset>
 	</Sidebar.Provider>

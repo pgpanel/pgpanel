@@ -13,6 +13,7 @@
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import { toast } from 'svelte-sonner';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
@@ -36,6 +37,9 @@
 	let password = $state('');
 	let display_name = $state('');
 	let role = $state<UserRole>('operator');
+
+	let deleteOpen = $state(false);
+	let deleteTarget = $state<User | null>(null);
 
 	const isAdmin = $derived(
 		$currentUser?.role === 'admin' || $currentUser?.role === 'owner'
@@ -107,11 +111,17 @@
 		}
 	}
 
-	async function deleteUser(u: User) {
-		if (!confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
+	function askDeleteUser(u: User) {
+		deleteTarget = u;
+		deleteOpen = true;
+	}
+
+	async function confirmDeleteUser() {
+		if (!deleteTarget) return;
 		try {
-			await api(`/api/users/${u.id}`, { method: 'DELETE' });
+			await api(`/api/users/${deleteTarget.id}`, { method: 'DELETE' });
 			toast.success('User deleted');
+			deleteTarget = null;
 			await load();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Delete failed');
@@ -264,7 +274,7 @@
 											size="sm"
 											class="text-destructive hover:text-destructive"
 											disabled={u.id === $currentUser?.id}
-											onclick={() => deleteUser(u)}
+											onclick={() => askDeleteUser(u)}
 										>
 											<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 										</Button>
@@ -278,3 +288,12 @@
 		</Card.Content>
 	</Card.Root>
 </div>
+
+<ConfirmDialog
+	bind:open={deleteOpen}
+	title="Delete user?"
+	description={deleteTarget ? `Delete "${deleteTarget.username}"? This cannot be undone.` : ''}
+	confirmLabel="Delete"
+	variant="destructive"
+	onConfirm={confirmDeleteUser}
+/>

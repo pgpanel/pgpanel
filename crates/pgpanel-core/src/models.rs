@@ -1301,6 +1301,15 @@ pub struct MonitoringOverview {
     pub replica_total: i64,
     pub series: Vec<MonitoringPoint>,
     pub top_clusters: Vec<ClusterLoadRow>,
+    pub max_cpu_24h: f64,
+    pub max_memory_mb_24h: f64,
+    pub node_count: i64,
+    pub online_nodes: i64,
+    pub operations_failed_24h: i64,
+    pub operations_running: i64,
+    pub databases_total: i64,
+    pub backup_success_rate: f64,
+    pub nodes: Vec<NodeMonitoringRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1308,6 +1317,15 @@ pub struct MonitoringPoint {
     pub at: String,
     pub cpu: f64,
     pub memory_mb: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct NodeMonitoringRow {
+    pub node_id: String,
+    pub name: String,
+    pub cluster_count: i64,
+    pub avg_cpu: f64,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

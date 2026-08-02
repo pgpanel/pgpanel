@@ -189,7 +189,7 @@ async fn create_node(
     .bind(&enc)
     .bind(&labels)
     .bind(&now)
-    .bind(req.max_clusters.map(|n| n as i64))
+    .bind(req.max_clusters.filter(|&n| n > 0).map(|n| n as i64))
     .bind(req.notes.as_deref())
     .bind(if req.set_default { 1 } else { 0 })
     .bind(&now)
@@ -292,10 +292,12 @@ async fn update_node(
         .map(|v| v.to_string())
         .unwrap_or(existing.labels);
     let notes = req.notes.or(existing.notes);
-    let max_clusters = req
-        .max_clusters
-        .map(|n| n as i64)
-        .or(existing.max_clusters);
+    let max_clusters = match req.max_clusters {
+        // 0 or negative means unlimited (NULL)
+        Some(n) if n <= 0 => None,
+        Some(n) => Some(n as i64),
+        None => existing.max_clusters,
+    };
     let is_default = if req.set_default {
         1
     } else {

@@ -1,6 +1,6 @@
 //! Monitoring overview, alerts, and alert rules.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Duration, Utc};
@@ -36,8 +36,10 @@ fn parse_dt(s: &str) -> chrono::DateTime<Utc> {
 async fn monitoring_overview(
     State(state): State<AppState>,
     _auth: AuthUser,
+    Query(query): Query<MonitoringQuery>,
 ) -> ApiResult<Json<MonitoringOverview>> {
-    let since = (Utc::now() - Duration::hours(24)).to_rfc3339();
+    let hours = query.hours.unwrap_or(24).clamp(1, 168);
+    let since = (Utc::now() - Duration::hours(hours)).to_rfc3339();
 
     let cluster_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM clusters")
@@ -71,6 +73,19 @@ async fn monitoring_overview(
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0.0);
+    let max_cpu_24h: f64 = sqlx::query_scalar("SELECT COALESCE(MAX(cpu_percent),0) FROM cluster_metrics WHERE collected_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0.0);
+    let max_memory_mb_24h: f64 = sqlx::query_scalar("SELECT COALESCE(MAX(memory_usage_mb),0) FROM cluster_metrics WHERE collected_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0.0);
+    let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes").fetch_one(&state.pool).await.unwrap_or(0);
+    let online_nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE status = 'online'").fetch_one(&state.pool).await.unwrap_or(0);
+    let operations_failed_24h: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE status IN ('failed','error') AND created_at >= ?").bind(&since).fetch_one(&state.pool).await.unwrap_or(0);
+    let operations_running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE status IN ('running','pending')").fetch_one(&state.pool).await.unwrap_or(0);
+    let databases_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM databases").fetch_one(&state.pool).await.unwrap_or(0);
+
+    #[derive(sqlx::FromRow)]
+    struct NodeRow { node_id: String, name: String, cluster_count: i64, avg_cpu: f64, status: String }
+    let nodes = sqlx::query_as::<_, NodeRow>(
+        "SELECT n.id AS node_id, n.name, COUNT(DISTINCT c.id) AS cluster_count, COALESCE(AVG(m.cpu_percent),0) AS avg_cpu, n.status FROM nodes n LEFT JOIN clusters c ON c.node_id=n.id LEFT JOIN cluster_metrics m ON m.cluster_id=c.id AND m.collected_at >= ? GROUP BY n.id, n.name, n.status ORDER BY n.name"
+    ).bind(&since).fetch_all(&state.pool).await.unwrap_or_default().into_iter().map(|n| NodeMonitoringRow { node_id:n.node_id, name:n.name, cluster_count:n.cluster_count, avg_cpu:n.avg_cpu, status:n.status }).collect();
 
     let backups_last_24h: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM backups WHERE created_at >= ? AND status = 'succeeded'",
@@ -86,6 +101,8 @@ async fn monitoring_overview(
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
+    let backup_total = backups_last_24h + failed_backups_24h;
+    let backup_success_rate = if backup_total == 0 { 1.0 } else { backups_last_24h as f64 / backup_total as f64 };
 
     let replica_total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM cluster_replicas WHERE enabled = 1",
@@ -181,16 +198,31 @@ async fn monitoring_overview(
         replica_total,
         series,
         top_clusters,
+        max_cpu_24h,
+        max_memory_mb_24h,
+        node_count,
+        online_nodes,
+        operations_failed_24h,
+        operations_running,
+        databases_total,
+        backup_success_rate,
+        nodes,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MonitoringQuery {
+    hours: Option<i64>,
 }
 
 async fn cluster_monitoring(
     State(state): State<AppState>,
     _auth: AuthUser,
     Path(id): Path<Uuid>,
+    Query(query): Query<MonitoringQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let cluster = load_cluster(&state, id).await?;
-    let since = (Utc::now() - Duration::hours(24)).to_rfc3339();
+    let since = (Utc::now() - Duration::hours(query.hours.unwrap_or(24).clamp(1, 168))).to_rfc3339();
 
     #[derive(sqlx::FromRow, serde::Serialize)]
     struct MetricSample {

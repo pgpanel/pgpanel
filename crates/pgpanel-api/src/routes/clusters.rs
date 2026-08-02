@@ -108,7 +108,7 @@ async fn create_cluster(
                 "selected node does not exist or is disabled".into(),
             )));
         }
-        // Capacity check
+        // Capacity check — NULL or <= 0 means unlimited
         let max: Option<i64> =
             sqlx::query_scalar("SELECT max_clusters FROM nodes WHERE id = ?")
                 .bind(nid.to_string())
@@ -116,7 +116,7 @@ async fn create_cluster(
                 .await
                 .ok()
                 .flatten();
-        if let Some(max) = max {
+        if let Some(max) = max.filter(|m| *m > 0) {
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE node_id = ?")
                     .bind(nid.to_string())

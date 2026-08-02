@@ -11,6 +11,7 @@
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import { toast } from 'svelte-sonner';
 	import { trackOperation } from '$lib/jobs';
+	import { markWizardDone } from '$lib/wizard';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
 		DatabaseIcon,
@@ -70,8 +71,8 @@
 				body: JSON.stringify({ completed: true })
 			});
 		} finally {
-			sessionStorage.setItem('pgpanel_wizard_done', '1');
-			goto('/dashboard');
+			markWizardDone();
+			await goto('/dashboard');
 		}
 	}
 
@@ -131,8 +132,8 @@
 				method: 'POST',
 				body: JSON.stringify({ completed: true })
 			});
-			sessionStorage.setItem('pgpanel_wizard_done', '1');
-			goto('/dashboard');
+			markWizardDone();
+			await goto('/dashboard');
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Could not save wizard settings');
 			if (storage_type !== 'local') step = 2;

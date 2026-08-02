@@ -8,6 +8,8 @@ mod destinations;
 mod health;
 pub mod nodes;
 mod monitoring;
+mod fleet;
+mod updates;
 mod operations;
 mod replicas;
 mod settings;
@@ -55,6 +57,8 @@ pub fn router(state: AppState) -> Router {
         .merge(replicas::routes())
         .merge(monitoring::routes())
         .merge(tokens::routes())
+        .merge(fleet::routes())
+        .merge(updates::routes())
         .layer(from_fn_with_state(state.clone(), waf_guard))
         .layer(RequestBodyLimitLayer::new(body_limit))
         .layer(SetResponseHeaderLayer::if_not_present(

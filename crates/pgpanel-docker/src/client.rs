@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
-    StartContainerOptions, StatsOptions, StopContainerOptions,
+    RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{
@@ -72,6 +72,80 @@ impl DockerClient {
             item.map_err(|e| Error::Docker(format!("pull image {image}: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Pull only the official PgPanel image used by the panel updater.
+    pub async fn pull_panel_image(&self, image: &str) -> Result<()> {
+        if !image.starts_with("ghcr.io/pgpanel/pgpanel:") {
+            return Err(Error::Validation("panel image is not allowlisted".into()));
+        }
+        let options = Some(CreateImageOptions {
+            from_image: image,
+            ..Default::default()
+        });
+        let mut stream = self.docker.create_image(options, None, None);
+        while let Some(item) = stream.next().await {
+            item.map_err(|e| Error::Docker(format!("pull image {image}: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Best-effort restart of the running panel compose service after a pull.
+    /// Returns true if a matching container was restarted.
+    pub async fn restart_panel_container(&self) -> Result<bool> {
+        let opts = ListContainersOptions::<String> {
+            all: false,
+            filters: HashMap::from([(
+                "label".into(),
+                vec!["com.docker.compose.service=panel".into()],
+            )]),
+            ..Default::default()
+        };
+        let mut found = self
+            .docker
+            .list_containers(Some(opts))
+            .await
+            .map_err(|e| Error::Docker(format!("list panel containers: {e}")))?;
+
+        if found.is_empty() {
+            let opts = ListContainersOptions::<String> {
+                all: false,
+                ..Default::default()
+            };
+            found = self
+                .docker
+                .list_containers(Some(opts))
+                .await
+                .map_err(|e| Error::Docker(format!("list containers: {e}")))?
+                .into_iter()
+                .filter(|c| {
+                    c.image
+                        .as_deref()
+                        .map(|img| img.contains("ghcr.io/pgpanel/pgpanel"))
+                        .unwrap_or(false)
+                        || c.names
+                            .as_ref()
+                            .map(|ns| {
+                                ns.iter()
+                                    .any(|n| n.contains("pgpanel") && n.contains("panel"))
+                            })
+                            .unwrap_or(false)
+                })
+                .collect();
+        }
+
+        let Some(container) = found.into_iter().next() else {
+            return Ok(false);
+        };
+        let id = container
+            .id
+            .ok_or_else(|| Error::Docker("panel container missing id".into()))?;
+        info!(%id, "restarting panel container after update pull");
+        self.docker
+            .restart_container(&id, None::<RestartContainerOptions>)
+            .await
+            .map_err(|e| Error::Docker(format!("restart panel: {e}")))?;
+        Ok(true)
     }
 
     pub async fn create_volume(&self, name: &str, labels: HashMap<String, String>) -> Result<()> {

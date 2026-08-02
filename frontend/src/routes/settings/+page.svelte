@@ -1,6 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, type GlobalBackupPolicy, type ApiTokenInfo, type ApiTokenCreated } from '$lib/api';
+	import {
+		api,
+		type GlobalBackupPolicy,
+		type ApiTokenInfo,
+		type ApiTokenCreated,
+		type UpdateStatus
+	} from '$lib/api';
+	import {
+		fetchUpdateStatus,
+		checkForUpdates,
+		applyUpdate,
+		updateChecking
+	} from '$lib/updates';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -76,6 +89,12 @@
 	let tokenCreating = $state(false);
 	let createdToken = $state<ApiTokenCreated | null>(null);
 
+	let updates = $state<UpdateStatus | null>(null);
+	let applyOpen = $state(false);
+	let applying = $state(false);
+	let revokeTokenId = $state<string | null>(null);
+	let revokeOpen = $state(false);
+
 	onMount(async () => {
 		try {
 			[health, ready, storage, backupPolicy, tokens] = await Promise.all([
@@ -88,6 +107,7 @@
 		} catch {
 			storageError = 'Could not load the current storage configuration';
 		}
+		updates = await fetchUpdateStatus();
 	});
 
 	async function loadTokens() {
@@ -119,14 +139,43 @@
 		}
 	}
 
-	async function revokeToken(id: string) {
-		if (!confirm('Revoke this API token?')) return;
+	function askRevokeToken(id: string) {
+		revokeTokenId = id;
+		revokeOpen = true;
+	}
+
+	async function revokeToken() {
+		if (!revokeTokenId) return;
 		try {
-			await api(`/api/tokens/${id}`, { method: 'DELETE' });
+			await api(`/api/tokens/${revokeTokenId}`, { method: 'DELETE' });
 			toast.success('Token revoked');
 			await loadTokens();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Revoke failed');
+		} finally {
+			revokeTokenId = null;
+		}
+	}
+
+	async function handleCheckUpdates() {
+		updates = await checkForUpdates();
+		if (updates?.update_available) {
+			toast.success(`Update available: ${updates.latest_version}`);
+		} else {
+			toast.success('You are on the latest version');
+		}
+	}
+
+	async function handleApplyUpdate() {
+		applying = true;
+		try {
+			await applyUpdate();
+			toast.success('Update started — the panel may restart shortly');
+			updates = await fetchUpdateStatus();
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : 'Update failed');
+		} finally {
+			applying = false;
 		}
 	}
 
@@ -176,7 +225,54 @@
 	}
 </script>
 
-<PageHeader title="Settings" description="Storage, backup policy, health and security posture" />
+<PageHeader title="Settings" description="Storage, backup policy, updates, health and security posture" />
+
+<Card.Root id="updates" class="mb-6 page-card">
+	<Card.Header class="flex-row items-start justify-between gap-4">
+		<div>
+			<Card.Title class="flex items-center gap-2">
+				<HugeiconsIcon icon={RefreshIcon} class="size-5 text-primary" strokeWidth={2} />
+				Panel updates
+				{#if updates?.update_available}
+					<Badge class="bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30">Update available</Badge>
+				{/if}
+			</Card.Title>
+			<Card.Description>Check for and apply in-place panel updates</Card.Description>
+		</div>
+	</Card.Header>
+	<Card.Content class="space-y-4 text-sm">
+		<div class="grid gap-3 sm:grid-cols-2">
+			<div class="flex items-center justify-between rounded-lg border border-border/60 p-3">
+				<span class="text-muted-foreground">Current version</span>
+				<span class="font-mono text-xs">{updates?.current_version ?? health?.version ?? '—'}</span>
+			</div>
+			<div class="flex items-center justify-between rounded-lg border border-border/60 p-3">
+				<span class="text-muted-foreground">Latest version</span>
+				<span class="font-mono text-xs">{updates?.latest_version ?? '—'}</span>
+			</div>
+		</div>
+		{#if updates?.last_checked_at}
+			<p class="text-xs text-muted-foreground">
+				Last checked: {new Date(updates.last_checked_at).toLocaleString()}
+			</p>
+		{/if}
+		{#if updates?.changelog}
+			<p class="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+				{updates.changelog}
+			</p>
+		{/if}
+		<div class="flex flex-wrap gap-2">
+			<Button variant="outline" onclick={handleCheckUpdates} disabled={$updateChecking}>
+				{$updateChecking ? 'Checking…' : 'Check for updates'}
+			</Button>
+			{#if updates?.update_available}
+				<Button onclick={() => (applyOpen = true)} disabled={applying}>
+					{applying ? 'Updating…' : 'Update now'}
+				</Button>
+			{/if}
+		</div>
+	</Card.Content>
+</Card.Root>
 
 {#if storageError}
 	<Alert.Root variant="destructive" class="mb-4">
@@ -481,7 +577,7 @@
 								</td>
 								<td class="p-3 text-right">
 									{#if !t.revoked_at}
-										<Button variant="ghost" size="sm" onclick={() => revokeToken(t.id)}>
+										<Button variant="ghost" size="sm" onclick={() => askRevokeToken(t.id)}>
 											<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 											Revoke
 										</Button>
@@ -582,3 +678,21 @@
 		</Card.Content>
 	</Card.Root>
 </div>
+
+<ConfirmDialog
+	bind:open={revokeOpen}
+	title="Revoke API token?"
+	description="This token will stop working immediately."
+	confirmLabel="Revoke"
+	variant="destructive"
+	onConfirm={revokeToken}
+/>
+
+<ConfirmDialog
+	bind:open={applyOpen}
+	title="Apply panel update?"
+	description="The panel will download and install the latest version. It may restart and briefly become unavailable."
+	confirmLabel="Update now"
+	loading={applying}
+	onConfirm={handleApplyUpdate}
+/>

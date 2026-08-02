@@ -5,6 +5,7 @@
 	import { trackOperation } from '$lib/jobs';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import StatusBadge from '$lib/components/status-badge.svelte';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -82,6 +83,11 @@
 	let scheduleDescription = $state('');
 	let scheduleEnabled = $state(true);
 	let scheduleSaving = $state(false);
+
+	let deleteScheduleOpen = $state(false);
+	let deleteScheduleId = $state<string | null>(null);
+	let deleteTargetOpen = $state(false);
+	let deleteTargetId = $state<string | null>(null);
 
 	let targetDestinationId = $state('');
 	let targetCron = $state('0 3 * * *');
@@ -236,11 +242,17 @@
 		}
 	}
 
-	async function deleteSchedule(sid: string) {
-		if (!confirm('Delete this backup schedule?')) return;
+	function askDeleteSchedule(sid: string) {
+		deleteScheduleId = sid;
+		deleteScheduleOpen = true;
+	}
+
+	async function confirmDeleteSchedule() {
+		if (!deleteScheduleId) return;
 		try {
-			await api(`/api/clusters/${id}/backup/schedules/${sid}`, { method: 'DELETE' });
+			await api(`/api/clusters/${id}/backup/schedules/${deleteScheduleId}`, { method: 'DELETE' });
 			toast.success('Schedule deleted');
+			deleteScheduleId = null;
 			await load();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Delete failed');
@@ -278,11 +290,17 @@
 		}
 	}
 
-	async function deleteTarget(tid: string) {
-		if (!confirm('Remove this backup target binding?')) return;
+	function askDeleteTarget(tid: string) {
+		deleteTargetId = tid;
+		deleteTargetOpen = true;
+	}
+
+	async function confirmDeleteTarget() {
+		if (!deleteTargetId) return;
 		try {
-			await api(`/api/clusters/${id}/backup-targets/${tid}`, { method: 'DELETE' });
+			await api(`/api/clusters/${id}/backup-targets/${deleteTargetId}`, { method: 'DELETE' });
 			toast.success('Target removed');
+			deleteTargetId = null;
 			await load();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : 'Delete failed');
@@ -481,7 +499,7 @@
 							</Table.Cell>
 							<Table.Cell class="text-xs">{s.next_run_at ?? '—'}</Table.Cell>
 							<Table.Cell>
-								<Button variant="ghost" size="sm" onclick={() => deleteSchedule(s.id)}>
+								<Button variant="ghost" size="sm" onclick={() => askDeleteSchedule(s.id)}>
 									<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 								</Button>
 							</Table.Cell>
@@ -600,7 +618,7 @@
 								<StatusBadge status={t.enabled ? (t.last_status ?? 'enabled') : 'disabled'} />
 							</Table.Cell>
 							<Table.Cell>
-								<Button variant="ghost" size="sm" onclick={() => deleteTarget(t.id)}>
+								<Button variant="ghost" size="sm" onclick={() => askDeleteTarget(t.id)}>
 									<HugeiconsIcon icon={Delete02Icon} class="size-4" strokeWidth={2} />
 								</Button>
 							</Table.Cell>
@@ -769,3 +787,21 @@
 		{/if}
 	</Card.Content>
 </Card.Root>
+
+<ConfirmDialog
+	bind:open={deleteScheduleOpen}
+	title="Delete backup schedule?"
+	description="This schedule will be removed permanently."
+	confirmLabel="Delete"
+	variant="destructive"
+	onConfirm={confirmDeleteSchedule}
+/>
+
+<ConfirmDialog
+	bind:open={deleteTargetOpen}
+	title="Remove backup target?"
+	description="This destination binding will be removed from the cluster."
+	confirmLabel="Remove"
+	variant="destructive"
+	onConfirm={confirmDeleteTarget}
+/>
