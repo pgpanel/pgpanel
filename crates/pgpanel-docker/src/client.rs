@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
-    RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
+    StartContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{
@@ -19,6 +19,60 @@ use pgpanel_core::config::ALLOWED_POSTGRES_IMAGES;
 use pgpanel_core::error::{Error, Result};
 
 use crate::types::{ContainerInspect, ContainerStats, PostgresContainerSpec};
+
+/// Shell script run inside a short-lived `docker:cli` helper.
+/// Must not stop the panel from inside the panel process — Compose recreates it.
+const PANEL_UPDATER_SCRIPT: &str = r#"
+set -eu
+echo "[pgpanel-updater] target=$PGPANEL_TARGET_IMAGE version=$PGPANEL_TARGET_VERSION"
+echo "[pgpanel-updater] compose_dir=$COMPOSE_DIR env_file=$ENV_FILE"
+sleep 5
+
+upsert_env() {
+  key="$1"
+  val="$2"
+  file="$3"
+  if [ ! -f "$file" ]; then
+    echo "${key}=${val}" > "$file"
+    return
+  fi
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+  else
+    echo "${key}=${val}" >> "$file"
+  fi
+}
+
+if [ -n "${ENV_FILE:-}" ] && [ -d "$(dirname "$ENV_FILE")" ]; then
+  upsert_env PGPANEL_IMAGE "$PGPANEL_TARGET_IMAGE" "$ENV_FILE" || true
+  upsert_env PGPANEL_VERSION "$PGPANEL_TARGET_VERSION" "$ENV_FILE" || true
+  upsert_env PGPANEL_PULL_POLICY missing "$ENV_FILE" || true
+  echo "[pgpanel-updater] updated env pins"
+fi
+
+cd "$COMPOSE_DIR"
+set -a
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE" || true
+set +a
+export PGPANEL_IMAGE="$PGPANEL_TARGET_IMAGE"
+export PGPANEL_VERSION="$PGPANEL_TARGET_VERSION"
+export PGPANEL_PULL_POLICY=missing
+
+echo "[pgpanel-updater] pulling panel image"
+docker compose pull panel || docker pull "$PGPANEL_TARGET_IMAGE"
+
+echo "[pgpanel-updater] recreating panel via compose"
+if ! docker compose up -d --no-deps --force-recreate --pull missing panel; then
+  echo "[pgpanel-updater] force-recreate failed — retrying plain up"
+  if ! docker compose up -d --no-deps panel; then
+    echo "[pgpanel-updater] FAILED"
+    exit 1
+  fi
+fi
+
+echo "[pgpanel-updater] done"
+"#;
 
 /// Thin wrapper around Bollard with allowlisted operations only.
 #[derive(Clone)]
@@ -79,6 +133,7 @@ impl DockerClient {
         if !image.starts_with("ghcr.io/pgpanel/pgpanel:") {
             return Err(Error::Validation("panel image is not allowlisted".into()));
         }
+        info!(%image, "pulling panel image");
         let options = Some(CreateImageOptions {
             from_image: image,
             ..Default::default()
@@ -90,106 +145,165 @@ impl DockerClient {
         Ok(())
     }
 
-    /// Best-effort restart of the running panel compose service after a pull.
-    /// Returns true if a matching container was restarted.
-    pub async fn restart_panel_container(&self) -> Result<bool> {
-        let id = self.find_panel_container_id().await?;
-        let Some(id) = id else {
-            return Ok(false);
-        };
-        info!(%id, "restarting panel container after update pull");
-        self.docker
-            .restart_container(&id, None::<RestartContainerOptions>)
-            .await
-            .map_err(|e| Error::Docker(format!("restart panel: {e}")))?;
-        Ok(true)
+    async fn pull_updater_image(&self, image: &str) -> Result<()> {
+        const ALLOWED: &[&str] = &["docker:27-cli", "docker:cli"];
+        if !ALLOWED.contains(&image) {
+            return Err(Error::Validation(format!(
+                "updater image '{image}' is not allowlisted"
+            )));
+        }
+        info!(%image, "pulling panel self-updater image");
+        let options = Some(CreateImageOptions {
+            from_image: image,
+            ..Default::default()
+        });
+        let mut stream = self.docker.create_image(options, None, None);
+        while let Some(item) = stream.next().await {
+            item.map_err(|e| Error::Docker(format!("pull image {image}: {e}")))?;
+        }
+        Ok(())
     }
 
-    /// Pull a new panel image and recreate the running panel container with it.
-    /// Pulls first while the old panel is still serving, then recreates.
-    pub async fn upgrade_panel_image(&self, new_image: &str) -> Result<()> {
-        // Phase 1: pull while old panel stays up (no downtime yet).
+    async fn image_present(&self, image: &str) -> bool {
+        self.docker.inspect_image(image).await.is_ok()
+    }
+
+    /// Schedule a panel upgrade that survives the current process dying.
+    ///
+    /// Critical: never `docker stop` ourselves in-process. With
+    /// `restart: unless-stopped`, an explicit stop leaves the panel down
+    /// forever (Caddy 502). A detached helper runs `docker compose up
+    /// --force-recreate panel` after a short delay instead.
+    pub async fn schedule_detached_panel_upgrade(
+        &self,
+        new_image: &str,
+        version: &str,
+    ) -> Result<()> {
+        if !new_image.starts_with("ghcr.io/pgpanel/pgpanel:") {
+            return Err(Error::Validation("panel image is not allowlisted".into()));
+        }
+
+        // Phase 1: pull while old panel stays up.
         self.pull_panel_image(new_image).await?;
         let _ = self
             .pull_panel_image("ghcr.io/pgpanel/pgpanel:latest")
             .await;
 
-        // Brief pause so the HTTP apply response can flush to the client.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        // Phase 2: recreate (this kills the current process).
-        if !self.recreate_panel_container(new_image).await? {
-            return Err(Error::Docker(
-                "panel container not found — run: sudo pgpanel update".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Recreate the panel container from its current inspect config with a new image.
-    pub async fn recreate_panel_container(&self, new_image: &str) -> Result<bool> {
-        let id = self.find_panel_container_id().await?;
-        let Some(id) = id else {
-            return Ok(false);
-        };
+        let panel_id = self.find_panel_container_id().await?.ok_or_else(|| {
+            Error::Docker(
+                "panel container not found — run on the host: sudo pgpanel update".into(),
+            )
+        })?;
 
         let inspect = self
             .docker
-            .inspect_container(&id, None)
+            .inspect_container(&panel_id, None)
             .await
             .map_err(|e| Error::Docker(format!("inspect panel: {e}")))?;
 
-        let name = inspect
-            .name
+        let labels = inspect
+            .config
             .as_ref()
-            .map(|n| n.trim_start_matches('/').to_string())
-            .filter(|n| !n.is_empty());
-
-        let network_names: Vec<String> = inspect
-            .network_settings
-            .as_ref()
-            .and_then(|ns| ns.networks.as_ref())
-            .map(|nets| nets.keys().cloned().collect())
+            .and_then(|c| c.labels.clone())
             .unwrap_or_default();
 
-        let container_config = inspect.config.clone().unwrap_or_default();
+        let working_dir = labels
+            .get("com.docker.compose.project.working_dir")
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                Error::Docker(
+                    "panel is not a Compose service (missing working_dir label) — run: sudo pgpanel update"
+                        .into(),
+                )
+            })?;
 
-        let create_config = Config {
-            image: Some(new_image.to_string()),
-            env: container_config.env,
-            labels: container_config.labels,
-            hostname: container_config.hostname,
-            exposed_ports: container_config.exposed_ports,
-            healthcheck: container_config.healthcheck,
-            host_config: inspect.host_config.clone(),
+        let install_dir = std::path::Path::new(&working_dir)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| working_dir.clone());
+        let env_file = format!("{install_dir}/.env");
+
+        let mut updater_image = "docker:27-cli";
+        if let Err(e) = self.pull_updater_image(updater_image).await {
+            warn!(error = %e, "docker:27-cli pull failed — trying docker:cli");
+            self.pull_updater_image("docker:cli").await?;
+            updater_image = "docker:cli";
+        } else if !self.image_present("docker:27-cli").await {
+            self.pull_updater_image("docker:cli").await?;
+            updater_image = "docker:cli";
+        }
+
+        let _ = self.remove_container("pgpanel-self-updater", true).await;
+
+        let host_config = HostConfig {
+            binds: Some(vec![
+                "/var/run/docker.sock:/var/run/docker.sock".into(),
+                format!("{working_dir}:{working_dir}"),
+                format!("{install_dir}:{install_dir}"),
+            ]),
+            auto_remove: Some(true),
+            network_mode: Some("none".into()),
+            restart_policy: Some(bollard::models::RestartPolicy {
+                name: Some(bollard::models::RestartPolicyNameEnum::NO),
+                maximum_retry_count: None,
+            }),
+            security_opt: Some(vec!["no-new-privileges:true".to_string()]),
             ..Default::default()
         };
 
-        self.stop_container(&id, 10).await?;
-        self.remove_container(&id, true).await?;
+        let config = Config {
+            image: Some(updater_image.to_string()),
+            env: Some(vec![
+                format!("PGPANEL_TARGET_IMAGE={new_image}"),
+                format!("PGPANEL_TARGET_VERSION={version}"),
+                format!("COMPOSE_DIR={working_dir}"),
+                format!("ENV_FILE={env_file}"),
+                format!("PANEL_CONTAINER_ID={panel_id}"),
+            ]),
+            cmd: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                PANEL_UPDATER_SCRIPT.to_string(),
+            ]),
+            host_config: Some(host_config),
+            labels: Some(HashMap::from([
+                ("managed-by".into(), "pgpanel".into()),
+                ("pgpanel.role".into(), "self-updater".into()),
+            ])),
+            ..Default::default()
+        };
 
         let options = CreateContainerOptions {
-            name: name.as_deref().unwrap_or_default(),
+            name: "pgpanel-self-updater",
             platform: None,
         };
 
-        info!(image = %new_image, container = ?name, "recreating panel container");
+        info!(
+            image = %new_image,
+            version = %version,
+            compose_dir = %working_dir,
+            "scheduling detached panel upgrade (compose recreate)"
+        );
         let response = self
             .docker
-            .create_container(Some(options), create_config)
+            .create_container(Some(options), config)
             .await
-            .map_err(|e| Error::Docker(format!("recreate panel: {e}")))?;
+            .map_err(|e| Error::Docker(format!("create self-updater: {e}")))?;
+        self.start_container(&response.id).await?;
+        info!(updater_id = %response.id, "panel self-updater started");
+        Ok(())
+    }
 
-        let new_id = response.id;
-        self.start_container(&new_id).await?;
-
-        for net in network_names {
-            if net != "bridge" {
-                self.connect_network(&net, &new_id).await?;
-            }
-        }
-
-        Ok(true)
+    /// Pull + schedule detached compose recreate (does not stop this process).
+    pub async fn upgrade_panel_image(&self, new_image: &str) -> Result<()> {
+        let version = new_image
+            .rsplit_once(':')
+            .map(|(_, v)| v)
+            .unwrap_or("latest");
+        self.schedule_detached_panel_upgrade(new_image, version)
+            .await
     }
 
     async fn find_panel_container_id(&self) -> Result<Option<String>> {

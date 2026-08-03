@@ -55,14 +55,19 @@ export interface ApplyUpdateResult {
 	poll_health?: boolean;
 }
 
-const RECOVERY_ENDPOINTS = ['/api/health', '/health', '/api/updates/status'] as const;
+const RECOVERY_ENDPOINTS = ['/health'] as const;
 
 async function probePanelHealth(): Promise<boolean> {
 	for (const path of RECOVERY_ENDPOINTS) {
 		try {
-			const res = await fetch(path, { credentials: 'include' });
+			const res = await fetch(path, { credentials: 'omit' });
 			if (res.ok) {
-				await res.json();
+				// /health returns JSON; tolerate empty/non-JSON bodies.
+				try {
+					await res.json();
+				} catch {
+					/* ok */
+				}
 				return true;
 			}
 			if (res.status === 502 || res.status === 503) continue;

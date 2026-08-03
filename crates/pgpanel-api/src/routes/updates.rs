@@ -146,21 +146,29 @@ async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
     put(&s, "update.pending", &v).await?;
     let image = format!("ghcr.io/pgpanel/pgpanel:{v}");
     let image_for_task = image.clone();
+    let version_for_task = v.clone();
 
-    // Pull happens in background; recreate kills this process after images are ready.
-    // Respond immediately so the browser gets a clean JSON body (not a mid-flight 502).
+    // Pull + schedule a detached Compose updater. Never stop this process
+    // in-place — that permanently downs the panel (unless-stopped + explicit stop).
     let docker = s.provisioner.docker().clone();
     tokio::spawn(async move {
-        // Extra delay: let the apply response leave the socket before we stop ourselves.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if let Err(e) = docker.upgrade_panel_image(&image_for_task).await {
-            error!(error = %e, image = %image_for_task, "panel in-place upgrade failed");
+        // Let the HTTP response flush before heavy pull / helper start.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if let Err(e) = docker
+            .schedule_detached_panel_upgrade(&image_for_task, &version_for_task)
+            .await
+        {
+            error!(
+                error = %e,
+                image = %image_for_task,
+                "panel detached upgrade failed — run: sudo pgpanel update"
+            );
         }
     });
 
     Ok(Json(serde_json::json!({
         "status": "started",
-        "message": "Update started. Images will download first, then the panel restarts automatically — keep this tab open.",
+        "message": "Update started. A helper container will recreate the panel via Docker Compose — keep this tab open.",
         "version": v,
         "image": image,
         "poll_health": true,
