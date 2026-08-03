@@ -2,7 +2,7 @@
 # install.sh rewrites this for domain / HTTP-only modes.
 #
 # Public surface only: Caddy :80 / :443
-# Panel and Databasus stay on internal Docker networks.
+# Panel stays on the internal Docker network.
 
 {
 	email {$CADDY_EMAIL}
@@ -32,16 +32,3 @@
 		format console
 	}
 }
-
-# Optional public Databasus UI — only enable if DATABASUS_PUBLIC=1 in installer.
-# {$DATABASUS_DOMAIN} {
-# 	encode zstd gzip
-# 	header {
-# 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-# 		X-Content-Type-Options "nosniff"
-# 		X-Frame-Options "DENY"
-# 		Referrer-Policy "strict-origin-when-cross-origin"
-# 		-Server
-# 	}
-# 	reverse_proxy databasus:8000
-# }

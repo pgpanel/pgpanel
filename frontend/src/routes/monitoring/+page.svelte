@@ -223,7 +223,7 @@
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
-							{#each overview.top_clusters.slice(0, 5) as row (row.cluster_id)}
+							{#each overview.top_clusters.slice(0, 5) as row, i (`${i}-${row.cluster_id}`)}
 								<Table.Row>
 									<Table.Cell>
 										<a

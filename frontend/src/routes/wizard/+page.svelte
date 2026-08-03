@@ -32,7 +32,6 @@
 	let postgres_version = $state('17');
 	let enable_backup = $state(true);
 	let db_name = $state('app');
-	let role_name = $state('app_user');
 	let cpu_limit = $state(2);
 	let memory_mb = $state(2048);
 	let storage_limit_gb = $state(20);
@@ -160,8 +159,7 @@
 					expose_publicly: false,
 					enable_backup,
 					node_id: node_id || undefined,
-					initial_databases:
-						db_name && role_name ? [{ database_name: db_name, role_name }] : []
+					initial_databases: db_name ? [{ database_name: db_name }] : []
 				})
 			});
 			toast.message('Admin password (copy now)', {
@@ -284,15 +282,13 @@
 						</Select.Content>
 					</Select.Root>
 				</div>
-				<div class="grid gap-4 sm:grid-cols-2">
-					<div class="space-y-2">
-						<Label>App database</Label>
-						<Input bind:value={db_name} class="font-mono" placeholder="app" />
-					</div>
-					<div class="space-y-2">
-						<Label>App role</Label>
-						<Input bind:value={role_name} class="font-mono" placeholder="app_user" />
-					</div>
+				<div class="space-y-2">
+					<Label>App database</Label>
+					<Input bind:value={db_name} class="font-mono" placeholder="app" required />
+					<p class="text-xs text-muted-foreground">
+						User = cluster slug, password is generated automatically. Assign extra users later on
+						Databases &amp; users.
+					</p>
 				</div>
 				<div class="grid gap-4 sm:grid-cols-3">
 					<div class="space-y-2">

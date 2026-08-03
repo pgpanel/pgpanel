@@ -73,9 +73,7 @@
 		try {
 			const info = await api<ClusterConnectionInfo>(`/api/clusters/${id}/connection`);
 			connection = info;
-			selectedRole = info.roles.includes('app')
-				? 'app'
-				: info.default_role;
+			selectedRole = info.default_role;
 			selectedDatabase = info.default_database;
 			hostMode = 'internal';
 			revealed = null;

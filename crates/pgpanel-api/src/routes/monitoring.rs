@@ -200,11 +200,15 @@ async fn monitoring_overview(
 
     let top_rows = sqlx::query_as::<_, TopRow>(
         r#"
-        SELECT c.id AS cluster_id, c.name, m.cpu_percent, m.memory_usage_mb, c.status
+        SELECT c.id AS cluster_id, c.name,
+               MAX(m.cpu_percent) AS cpu_percent,
+               MAX(m.memory_usage_mb) AS memory_usage_mb,
+               c.status
         FROM clusters c
         INNER JOIN cluster_metrics m ON m.cluster_id = c.id
         WHERE m.collected_at >= ?
-        ORDER BY m.cpu_percent DESC
+        GROUP BY c.id, c.name, c.status
+        ORDER BY cpu_percent DESC
         LIMIT 10
         "#,
     )

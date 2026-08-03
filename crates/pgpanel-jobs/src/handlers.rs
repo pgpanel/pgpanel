@@ -51,6 +51,7 @@ impl JobContext {
             JobType::CreateDatabase => self.handle_create_database(&op).await,
             JobType::DeleteDatabase => self.handle_delete_database(&op).await,
             JobType::RotatePassword => self.handle_rotate_password(&op).await,
+            JobType::UpdateNetworking => self.handle_update_networking(&op).await,
             JobType::RefreshMetrics => self.handle_refresh_metrics(&op).await,
             JobType::PingNode => self.handle_ping_node(&op).await,
             JobType::SyncReplica => self.handle_sync_replica(&op).await,
@@ -220,14 +221,25 @@ impl JobContext {
             }
 
             // Create user-specified databases + roles from the create form
+            let cluster_slug: String =
+                sqlx::query_scalar("SELECT slug FROM clusters WHERE id = ?")
+                    .bind(cluster_id.to_string())
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap_or_else(|_| "app".into());
+
             for spec in &req.initial_databases {
+                let role_name = spec
+                    .role_name
+                    .clone()
+                    .unwrap_or_else(|| cluster_slug.clone());
                 self.queue
                     .append_log(
                         op.id,
                         "info",
                         &format!(
                             "creating initial database {} owner {}",
-                            spec.database_name, spec.role_name
+                            spec.database_name, role_name
                         ),
                     )
                     .await?;
@@ -237,7 +249,7 @@ impl JobContext {
                             .append_log(
                                 op.id,
                                 "warn",
-                                &format!("password for {}: {e}", spec.role_name),
+                                &format!("password for {role_name}: {e}"),
                             )
                             .await?;
                         generate_password()
@@ -248,18 +260,18 @@ impl JobContext {
                     generate_password()
                 };
 
-                if let Err(e) = roles.create_role(&spec.role_name, &password, None).await {
+                if let Err(e) = roles.create_role(&role_name, &password, None).await {
                     self.queue
                         .append_log(
                             op.id,
                             "error",
-                            &format!("create role {}: {e}", spec.role_name),
+                            &format!("create role {role_name}: {e}"),
                         )
                         .await?;
                     continue;
                 }
                 if let Err(e) = roles
-                    .create_database(&spec.database_name, &spec.role_name, None)
+                    .create_database(&spec.database_name, &role_name, None)
                     .await
                 {
                     self.queue
@@ -273,7 +285,7 @@ impl JobContext {
                 }
 
                 let enc = encrypt_secret(&self.config.master_encryption_key, &password)?;
-                self.store_credential(cluster_id, &spec.role_name, "app", &enc)
+                self.store_credential(cluster_id, &role_name, "app", &enc)
                     .await?;
 
                 let now = Utc::now().to_rfc3339();
@@ -284,7 +296,7 @@ impl JobContext {
                 .bind(db_id.to_string())
                 .bind(cluster_id.to_string())
                 .bind(&spec.database_name)
-                .bind(&spec.role_name)
+                .bind(&role_name)
                 .bind(&now)
                 .execute(&self.pool)
                 .await;
@@ -295,14 +307,14 @@ impl JobContext {
                 )
                 .bind(role_id.to_string())
                 .bind(cluster_id.to_string())
-                .bind(&spec.role_name)
+                .bind(&role_name)
                 .bind(&now)
                 .execute(&self.pool)
                 .await;
 
                 created_roles.push(serde_json::json!({
                     "database": spec.database_name,
-                    "role": spec.role_name,
+                    "role": role_name,
                     "password": password.expose_secret(),
                 }));
             }
@@ -1974,42 +1986,50 @@ impl JobContext {
         let req: CreateDatabaseRequest = serde_json::from_value(op.payload.clone())
             .map_err(|e| Error::Job(format!("payload: {e}")))?;
 
-        let host: String =
-            sqlx::query_scalar("SELECT internal_hostname FROM clusters WHERE id = ?")
-                .bind(cluster_id.to_string())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| Error::Job(e.to_string()))?;
+        let (host, slug): (String, String) = sqlx::query_as(
+            "SELECT internal_hostname, slug FROM clusters WHERE id = ?",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        let role_name = req
+            .role_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| slug.clone());
 
         let client = self.connect_cluster_admin(cluster_id, &host).await?;
         let roles = RoleService::new(&client);
 
-        let password = if req.generate_password || req.password.is_none() {
-            generate_password()
-        } else {
-            let p = req.password.clone().unwrap_or_default();
-            pgpanel_core::crypto::validate_password_strength(&p)?;
-            SecretString::from(p)
-        };
+        let role_existed = roles.role_exists(&role_name).await?;
+        let mut created_password: Option<String> = None;
 
-        // Partial failure handling: role may exist without database
-        if !roles.role_exists(&req.role_name).await? {
+        if !role_existed {
+            let password = if req.generate_password || req.password.is_none() {
+                generate_password()
+            } else {
+                let p = req.password.clone().unwrap_or_default();
+                pgpanel_core::crypto::validate_password_strength(&p)?;
+                SecretString::from(p)
+            };
             roles
-                .create_role(&req.role_name, &password, req.connection_limit)
+                .create_role(&role_name, &password, req.connection_limit)
                 .await?;
-        } else {
-            // Role exists (retry) — update password
-            roles.change_password(&req.role_name, &password).await?;
+            let enc = encrypt_secret(&self.config.master_encryption_key, &password)?;
+            self.store_credential(cluster_id, &role_name, "app", &enc)
+                .await?;
+            created_password = Some(password.expose_secret().to_string());
         }
 
         if !roles.database_exists(&req.database_name).await? {
             match roles
-                .create_database(&req.database_name, &req.role_name, req.connection_limit)
+                .create_database(&req.database_name, &role_name, req.connection_limit)
                 .await
             {
                 Ok(()) => {}
                 Err(e) => {
-                    // Leave role in place for retry; record partial state
                     self.queue
                         .append_log(
                             op.id,
@@ -2024,6 +2044,23 @@ impl JobContext {
             }
         }
 
+        // Cluster primary user (slug) always gets CONNECT on every app DB.
+        if role_name != slug && roles.role_exists(&slug).await? {
+            let mut allowed = roles.list_connectable_databases(&slug).await.unwrap_or_default();
+            if !allowed.iter().any(|d| d == &req.database_name) {
+                allowed.push(req.database_name.clone());
+            }
+            if let Err(e) = roles.set_database_access(&slug, &allowed).await {
+                self.queue
+                    .append_log(
+                        op.id,
+                        "warn",
+                        &format!("grant cluster user {slug} on {}: {e}", req.database_name),
+                    )
+                    .await?;
+            }
+        }
+
         let now = Utc::now().to_rfc3339();
         let db_id = Uuid::new_v4();
         let role_id = Uuid::new_v4();
@@ -2034,7 +2071,7 @@ impl JobContext {
         .bind(db_id.to_string())
         .bind(cluster_id.to_string())
         .bind(&req.database_name)
-        .bind(&req.role_name)
+        .bind(&role_name)
         .bind(req.connection_limit)
         .bind(&now)
         .execute(&self.pool)
@@ -2046,31 +2083,102 @@ impl JobContext {
         )
         .bind(role_id.to_string())
         .bind(cluster_id.to_string())
-        .bind(&req.role_name)
+        .bind(&role_name)
         .bind(req.connection_limit)
         .bind(&now)
         .execute(&self.pool)
         .await
         .ok();
 
-        let enc = encrypt_secret(&self.config.master_encryption_key, &password)?;
-        self.store_credential(cluster_id, &req.role_name, "app", &enc)
-            .await?;
-
-        // Password returned only via operation result once (API layer exposes once)
         Ok(serde_json::json!({
             "database_id": db_id,
             "role_id": role_id,
             "database_name": req.database_name,
-            "role_name": req.role_name,
-            "password": password.expose_secret(),
-            "connection_string": format!(
+            "role_name": role_name,
+            "password": created_password,
+            "connection_string": created_password.as_ref().map(|pw| format!(
                 "postgresql://{}:{}@{}:5432/{}",
-                req.role_name,
-                urlencoding_minimal(password.expose_secret()),
+                role_name,
+                urlencoding_minimal(pw),
                 host,
                 req.database_name
+            )),
+        }))
+    }
+
+    async fn handle_update_networking(&self, op: &Operation) -> Result<serde_json::Value> {
+        let cluster_id = op
+            .cluster_id
+            .ok_or_else(|| Error::Job("missing cluster_id".into()))?;
+        let expose = op
+            .payload
+            .get("expose_publicly")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let public_port = op
+            .payload
+            .get("public_port")
+            .and_then(|v| v.as_u64())
+            .map(|p| p as u16);
+        let public_port = if expose { public_port } else { None };
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            slug: String,
+            postgres_version: String,
+            cpu_limit: f64,
+            memory_mb: i64,
+            docker_container_name: String,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            "SELECT slug, postgres_version, cpu_limit, memory_mb, docker_container_name FROM clusters WHERE id = ?",
+        )
+        .bind(cluster_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        self.set_cluster_status(cluster_id, ClusterStatus::Updating, None)
+            .await?;
+        self.queue
+            .set_progress(op.id, 20, "recreating container with new port mapping")
+            .await?;
+
+        let admin = self.load_admin_password(cluster_id).await?;
+        let provisioner = self.provisioner_for_cluster(cluster_id).await?;
+        let container_id = provisioner
+            .recreate_with_public_port(
+                cluster_id,
+                &row.slug,
+                &row.postgres_version,
+                row.cpu_limit,
+                row.memory_mb as u32,
+                admin.expose_secret(),
+                public_port,
             )
+            .await?;
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE clusters SET public_port = ?, docker_container_id = ?, status = ?, health = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(public_port.map(|p| p as i64))
+        .bind(&container_id)
+        .bind(ClusterStatus::Healthy.as_str())
+        .bind(HealthStatus::Healthy.as_str())
+        .bind(&now)
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Job(e.to_string()))?;
+
+        Ok(serde_json::json!({
+            "cluster_id": cluster_id,
+            "container_id": container_id,
+            "container_name": row.docker_container_name,
+            "public_port": public_port,
+            "expose_publicly": expose,
         }))
     }
 

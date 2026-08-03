@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use secrecy::ExposeSecret;
@@ -9,7 +9,7 @@ use pgpanel_core::audit;
 use pgpanel_core::crypto::{encrypt_secret, generate_password};
 use pgpanel_core::error::Error;
 use pgpanel_core::models::*;
-use pgpanel_core::validation::validate_display_name;
+use pgpanel_core::validation::{validate_display_name, validate_public_port, validate_safe_name};
 use pgpanel_docker::ClusterProvisioner;
 use pgpanel_jobs::JobQueue;
 
@@ -23,6 +23,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/clusters/{id}",
             get(get_cluster).delete(delete_cluster),
+        )
+        .route(
+            "/api/clusters/{id}/networking",
+            put(update_networking),
         )
         .route("/api/clusters/{id}/connection", get(connection_info))
         .route(
@@ -103,23 +107,31 @@ async fn connection_info(
             serde_json::json!({"name": "postgres", "owner_role": "postgres"}),
         );
     }
-    if !db_list.iter().any(|d| d["name"] == "app") {
-        // Prefer showing app even before job finishes registering it
-        if role_list.iter().any(|r| r == "app") {
-            db_list.push(serde_json::json!({"name": "app", "owner_role": "app"}));
+    if !db_list.iter().any(|d| d["name"] == cluster.slug.as_str()) {
+        if role_list.iter().any(|r| r == &cluster.slug) {
+            db_list.push(serde_json::json!({
+                "name": cluster.slug,
+                "owner_role": cluster.slug
+            }));
         }
     }
 
-    let default_role = if role_list.iter().any(|r| r == "app") {
-        "app"
+    let default_role = if role_list.iter().any(|r| r == &cluster.slug) {
+        cluster.slug.as_str()
     } else {
         "postgres"
     };
-    let default_database = if db_list.iter().any(|d| d["name"] == "app") {
-        "app"
-    } else {
-        "postgres"
-    };
+    let default_database = db_list
+        .iter()
+        .find(|d| d["owner_role"] == cluster.slug.as_str())
+        .and_then(|d| d["name"].as_str())
+        .or_else(|| {
+            db_list
+                .iter()
+                .find(|d| d["name"] != "postgres")
+                .and_then(|d| d["name"].as_str())
+        })
+        .unwrap_or("postgres");
 
     Ok(Json(serde_json::json!({
         "cluster_id": id,
@@ -177,7 +189,7 @@ async fn reveal_connection_password(
     let database = body
         .database
         .filter(|d| !d.trim().is_empty())
-        .unwrap_or_else(|| "app".into());
+        .unwrap_or_else(|| cluster.slug.clone());
     validate_safe_name(&database, "database").map_err(AppError)?;
 
     let (host, port) = if body.host_mode == "public" {
@@ -270,15 +282,21 @@ async fn create_cluster(
         encrypt_secret(&state.config.master_encryption_key, &admin_password).map_err(AppError)?;
     let now = Utc::now().to_rfc3339();
 
-    // Always provision a default app DB + role so connection strings have a
-    // non-superuser credential out of the box.
+    // Primary app user = cluster slug; password always random-generated.
+    // Caller only supplies database name(s).
     let mut req = req;
     if req.initial_databases.is_empty() {
         req.initial_databases.push(InitialDatabaseSpec {
-            database_name: "app".into(),
-            role_name: "app".into(),
+            database_name: slug.clone(),
+            role_name: Some(slug.clone()),
             password: None,
         });
+    } else {
+        for db in &mut req.initial_databases {
+            validate_safe_name(&db.database_name, "database_name").map_err(AppError)?;
+            db.role_name = Some(slug.clone());
+            db.password = None;
+        }
     }
 
     let public_port = if req.expose_publicly {
@@ -420,22 +438,22 @@ async fn create_cluster(
         .first()
         .cloned()
         .unwrap_or(InitialDatabaseSpec {
-            database_name: "app".into(),
-            role_name: "app".into(),
+            database_name: slug.clone(),
+            role_name: Some(slug.clone()),
             password: None,
         });
 
     Ok(Json(ClusterCreatedResponse {
         cluster,
         operation_id,
-        admin_password: plaintext.clone(),
+        admin_password: plaintext,
         connection_info: ConnectionInfo {
             host: names.internal_hostname,
             port: req.optional_public_port.unwrap_or(5432),
-            user: app.role_name,
+            user: app.role_name.unwrap_or_else(|| slug.clone()),
             database: app.database_name,
-            // App password is generated during provisioning; postgres admin shown once.
-            password: Some(plaintext),
+            // App password is generated during provisioning — shown via operation result.
+            password: None,
         },
     }))
 }
@@ -515,20 +533,19 @@ async fn delete_cluster(
         return Err(AppError(Error::DeleteProtection));
     }
 
-    if req.mode == DeleteMode::PermanentlyDelete {
-        match &req.confirm_name {
-            Some(n) if n == &cluster.name => {}
-            _ => {
-                return Err(AppError(Error::ConfirmationRequired(
-                    "confirm_name must match cluster name exactly".into(),
-                )));
-            }
-        }
-        if !req.confirm_volume_delete {
+    match &req.confirm_name {
+        Some(n) if n == &cluster.name => {}
+        _ => {
             return Err(AppError(Error::ConfirmationRequired(
-                "confirm_volume_delete must be true for permanent delete".into(),
+                "confirm_name must match cluster name exactly".into(),
             )));
         }
+    }
+
+    if req.mode == DeleteMode::PermanentlyDelete && !req.confirm_volume_delete {
+        return Err(AppError(Error::ConfirmationRequired(
+            "confirm_volume_delete must be true for permanent delete".into(),
+        )));
     }
 
     let payload = serde_json::to_value(&req).unwrap_or_default();
@@ -570,6 +587,63 @@ async fn delete_cluster(
     }
 
     Ok(Json(serde_json::json!({"operation_id": op})))
+}
+
+async fn update_networking(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateClusterNetworkingRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let cluster = load_cluster(&state, id).await?;
+
+    let public_port = if req.expose_publicly {
+        let port = req.public_port.ok_or_else(|| {
+            AppError(Error::Validation(
+                "public_port required when expose_publicly is true".into(),
+            ))
+        })?;
+        validate_public_port(port).map_err(AppError)?;
+        Some(port)
+    } else {
+        None
+    };
+
+    let payload = serde_json::json!({
+        "expose_publicly": req.expose_publicly,
+        "public_port": public_port,
+    });
+    let op = state
+        .queue
+        .enqueue(
+            JobType::UpdateNetworking,
+            Some(id),
+            payload,
+            Some(&format!("update-networking-{id}")),
+        )
+        .await
+        .map_err(AppError)?;
+
+    write_audit(
+        &state,
+        Some(&auth.user),
+        audit::PORT_PUBLISH,
+        "cluster",
+        Some(&id.to_string()),
+        serde_json::json!({
+            "expose_publicly": req.expose_publicly,
+            "public_port": public_port,
+            "previous_port": cluster.public_port,
+        }),
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({
+        "operation_id": op,
+        "message": "Networking update queued — container will be recreated with the new port mapping."
+    })))
 }
 
 async fn dashboard(

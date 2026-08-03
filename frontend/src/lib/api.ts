@@ -82,7 +82,7 @@ export interface Cluster {
 	postgres_version: string;
 	status: string;
 	health: string;
-	databasus_status: string;
+	databasus_status?: string;
 	cpu_limit: number;
 	memory_mb: number;
 	storage_limit_gb: number;

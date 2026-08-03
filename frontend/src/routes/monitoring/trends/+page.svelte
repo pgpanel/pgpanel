@@ -64,18 +64,21 @@
 		return at;
 	}
 
-	const xLabels = $derived(
-		series.length <= 12
-			? series.map((p) => ({ at: p.at, label: formatTick(p.at) }))
-			: [
-					{ at: series[0].at, label: formatTick(series[0].at) },
-					{
-						at: series[Math.floor(series.length / 2)].at,
-						label: formatTick(series[Math.floor(series.length / 2)].at)
-					},
-					{ at: series[series.length - 1].at, label: formatTick(series[series.length - 1].at) }
-				]
-	);
+	const xLabels = $derived.by(() => {
+		if (series.length === 0) return [] as { key: string; label: string }[];
+		if (series.length <= 12) {
+			return series.map((p, i) => ({ key: `${i}-${p.at}`, label: formatTick(p.at) }));
+		}
+		const idxs = [0, Math.floor(series.length / 2), series.length - 1];
+		const seen = new Set<number>();
+		const out: { key: string; label: string }[] = [];
+		for (const i of idxs) {
+			if (seen.has(i)) continue;
+			seen.add(i);
+			out.push({ key: `${i}-${series[i].at}`, label: formatTick(series[i].at) });
+		}
+		return out;
+	});
 </script>
 
 <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -151,7 +154,7 @@
 						{/if}
 					</svg>
 					<div class="mt-2 flex justify-between text-xs text-muted-foreground">
-						{#each xLabels as tick (tick.at)}
+						{#each xLabels as tick (tick.key)}
 							<span>{tick.label}</span>
 						{/each}
 					</div>
@@ -197,7 +200,7 @@
 						{/if}
 					</svg>
 					<div class="mt-2 flex justify-between text-xs text-muted-foreground">
-						{#each xLabels as tick (tick.at)}
+						{#each xLabels as tick (tick.key)}
 							<span>{tick.label}</span>
 						{/each}
 					</div>
@@ -221,7 +224,7 @@
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
-							{#each series.slice(-24) as point (point.at)}
+							{#each series.slice(-24) as point, i (`${i}-${point.at}`)}
 								<Table.Row>
 									<Table.Cell class="font-mono text-xs">{point.at}</Table.Cell>
 									<Table.Cell class="text-right tabular-nums text-xs">

@@ -68,7 +68,7 @@
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
-					{#each clusters as c}
+					{#each clusters as c (c.id)}
 						<Table.Row class="cursor-pointer" onclick={() => goto(`/clusters/${c.id}`)}>
 							<Table.Cell>
 								<a
@@ -85,7 +85,9 @@
 							<Table.Cell class="text-muted-foreground">
 								{c.cpu_limit} CPU · {c.memory_mb} MB · {c.storage_limit_gb} GB
 							</Table.Cell>
-							<Table.Cell class="font-mono text-xs text-muted-foreground">{c.databasus_status}</Table.Cell>
+							<Table.Cell class="text-muted-foreground">
+								{c.enable_backup ? 'on' : 'off'}
+							</Table.Cell>
 						</Table.Row>
 					{/each}
 				</Table.Body>

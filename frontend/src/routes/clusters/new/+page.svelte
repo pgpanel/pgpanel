@@ -23,11 +23,10 @@
 	let optional_public_port = $state(5433);
 	let enable_backup = $state(true);
 	let db_name = $state('');
-	let role_name = $state('');
-	let role_password = $state('');
 	let error = $state('');
 	let oneTimePassword = $state('');
 	let appPassword = $state('');
+	let createdSlug = $state('');
 	let loading = $state(false);
 	let createdId = $state('');
 	let opProgress = $state('');
@@ -39,6 +38,16 @@
 	const selectedNodeLabel = $derived(
 		nodes.find((n) => n.id === node_id)?.name ?? 'Select node'
 	);
+
+	function slugify(displayName: string): string {
+		let s = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+		if (!s || !/^[a-z]/.test(s)) {
+			s = `c_${s || 'cluster'}`;
+		}
+		return s.slice(0, 63);
+	}
+
+	const slugPreview = $derived(slugify(name));
 
 	onMount(async () => {
 		try {
@@ -55,17 +64,6 @@
 		loading = true;
 		error = '';
 		try {
-			const initial_databases =
-				db_name && role_name
-					? [
-							{
-								database_name: db_name,
-								role_name,
-								password: role_password || undefined
-							}
-						]
-					: [];
-
 			const res = await api<{
 				cluster: { id: string };
 				admin_password: string;
@@ -82,11 +80,12 @@
 					optional_public_port: expose_publicly ? optional_public_port : null,
 					enable_backup,
 					node_id: node_id || undefined,
-					initial_databases
+					initial_databases: [{ database_name: db_name }]
 				})
 			});
 			oneTimePassword = res.admin_password;
 			createdId = res.cluster.id;
+			createdSlug = slugPreview;
 			opProgress = 'queued';
 			trackOperation(res.operation_id, {
 				title: `Create cluster “${name}”`,
@@ -98,8 +97,8 @@
 					const cred = result?.initial_credentials?.[0];
 					if (cred?.password) {
 						appPassword = cred.password;
-						toast.message('App role password (copy now)', {
-							description: `${cred.role}@${cred.database}`,
+						toast.message('Cluster user password (copy now)', {
+							description: `${createdSlug}@${cred.database}`,
 							duration: 15000
 						});
 					}
@@ -149,12 +148,13 @@
 			</div>
 			{#if appPassword}
 				<div>
-					<p class="mb-1 text-xs font-medium">App role ({role_name})</p>
+					<p class="mb-1 text-xs font-medium">Cluster user ({createdSlug})</p>
 					<div class="flex flex-wrap items-center gap-2">
 						<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
 							>{appPassword}</code
 						>
 						<Button size="sm" variant="secondary" onclick={() => copyPw(appPassword)}>
+							<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
 							Copy
 						</Button>
 					</div>
@@ -182,6 +182,11 @@
 			<div class="space-y-2">
 				<Label for="name">Display name</Label>
 				<Input id="name" bind:value={name} placeholder="Production Primary" required />
+				{#if name.trim()}
+					<p class="text-xs text-muted-foreground">
+						Cluster slug: <code class="font-mono">{slugPreview}</code>
+					</p>
+				{/if}
 			</div>
 			<div class="space-y-2">
 				<Label>PostgreSQL version</Label>
@@ -200,7 +205,7 @@
 					<Select.Root type="single" bind:value={node_id}>
 						<Select.Trigger class="w-full">{selectedNodeLabel}</Select.Trigger>
 						<Select.Content>
-							{#each nodes as node}
+							{#each nodes as node (node.id)}
 								<Select.Item value={node.id} label={node.name}>
 									{node.name}
 									{#if node.is_default}
@@ -223,13 +228,10 @@
 
 	<Card.Root class="border-border/60">
 		<Card.Header>
-			<Card.Title>Application database & role</Card.Title>
-			<Card.Description>
-				Defaults to database <code class="text-xs">app</code> and role
-				<code class="text-xs">app</code> if left empty — used for connection strings.
-			</Card.Description>
+			<Card.Title>Application database</Card.Title>
+			<Card.Description>User = cluster slug, password auto-generated</Card.Description>
 		</Card.Header>
-		<Card.Content class="grid gap-4 sm:grid-cols-2">
+		<Card.Content>
 			<div class="space-y-2">
 				<Label for="db">Database name</Label>
 				<Input
@@ -238,21 +240,8 @@
 					pattern={namePattern}
 					class="font-mono"
 					placeholder="app"
+					required
 				/>
-			</div>
-			<div class="space-y-2">
-				<Label for="role">Role name</Label>
-				<Input
-					id="role"
-					bind:value={role_name}
-					pattern={namePattern}
-					class="font-mono"
-					placeholder="app_user"
-				/>
-			</div>
-			<div class="space-y-2 sm:col-span-2">
-				<Label for="rpw">Role password (optional — generated if empty)</Label>
-				<Input id="rpw" type="password" bind:value={role_password} autocomplete="new-password" />
 			</div>
 		</Card.Content>
 	</Card.Root>
@@ -287,9 +276,7 @@
 			<div class="flex items-center justify-between gap-4">
 				<div class="space-y-0.5">
 					<Label>Native backups</Label>
-					<p class="text-xs text-muted-foreground">
-						pg_dump schedule + retention (no external Databasus)
-					</p>
+					<p class="text-xs text-muted-foreground">pg_dump schedule + retention</p>
 				</div>
 				<Switch bind:checked={enable_backup} />
 			</div>

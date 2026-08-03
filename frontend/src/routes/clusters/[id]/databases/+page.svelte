@@ -14,7 +14,6 @@
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
-	import * as Select from '$lib/components/ui/select/index.js';
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { toast } from 'svelte-sonner';
@@ -36,7 +35,6 @@
 
 	// Database create
 	let databaseName = $state('');
-	let ownerRole = $state('');
 	let dbCreating = $state(false);
 
 	// Role create
@@ -60,18 +58,12 @@
 
 	const id = $derived($page.params.id);
 	const namePattern = '^[a-z][a-z0-9_]{2,62}$';
-	const loginRoles = $derived(roles.filter((r) => r.can_login && !r.is_superuser));
-
 	async function loadDatabases() {
 		databases = await api<DatabaseRecord[]>(`/api/clusters/${id}/databases`);
 	}
 
 	async function loadRoles() {
 		roles = await api<RoleRecord[]>(`/api/clusters/${id}/roles`);
-		if (!ownerRole) {
-			const candidates = roles.filter((r) => r.can_login && !r.is_superuser);
-			if (candidates.length > 0) ownerRole = candidates[0].name;
-		}
 	}
 
 	async function load() {
@@ -91,11 +83,7 @@
 				`/api/clusters/${id}/databases`,
 				{
 					method: 'POST',
-					body: JSON.stringify({
-						database_name: databaseName,
-						role_name: ownerRole,
-						generate_password: true
-					})
+					body: JSON.stringify({ database_name: databaseName })
 				}
 			);
 			const db = databaseName;
@@ -276,7 +264,8 @@
 				<Card.Header>
 					<Card.Title>Create database</Card.Title>
 					<Card.Description>
-						Names must match <code class="font-mono text-xs">^[a-z][a-z0-9_]&#123;2,62&#125;$</code>
+						Owner is the cluster user. Assign extra users on the Users tab. Names must match
+						<code class="font-mono text-xs">^[a-z][a-z0-9_]&#123;2,62&#125;$</code>
 					</Card.Description>
 				</Card.Header>
 				<form onsubmit={createDatabase}>
@@ -291,33 +280,6 @@
 								class="font-mono"
 								placeholder="my_app"
 							/>
-						</div>
-						<div class="space-y-2">
-							<Label for="owner-role">Owner role</Label>
-							{#if loginRoles.length > 0}
-								<Select.Root type="single" bind:value={ownerRole}>
-									<Select.Trigger id="owner-role" class="w-full font-mono">
-										{ownerRole || 'Select role'}
-									</Select.Trigger>
-									<Select.Content>
-										{#each loginRoles as r (r.id)}
-											<Select.Item value={r.name} label={r.name}>{r.name}</Select.Item>
-										{/each}
-									</Select.Content>
-								</Select.Root>
-							{:else}
-								<Input
-									id="owner-role"
-									bind:value={ownerRole}
-									pattern={namePattern}
-									required
-									class="font-mono"
-									placeholder="app_user"
-								/>
-								<p class="text-xs text-muted-foreground">
-									No roles yet — enter a new role name (created with the database).
-								</p>
-							{/if}
 						</div>
 					</Card.Content>
 					<Card.Footer>

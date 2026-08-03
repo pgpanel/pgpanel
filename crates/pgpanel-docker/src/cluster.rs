@@ -157,7 +157,7 @@ impl ClusterProvisioner {
         self.docker.start_container(&container_id).await?;
         resources.container_started = true;
 
-        // 6. Dual-home onto management network so panel/Databasus resolve
+        // 6. Dual-home onto management network so panel resolves
         //    internal_hostname (pgpanel_pg_<slug>) via Docker DNS.
         self.attach_management_network(&names.container_name)
             .await?;
@@ -212,6 +212,54 @@ impl ClusterProvisioner {
             error!(error = %e, %container, "management network attach on restart");
         }
         self.wait_healthy(container).await
+    }
+
+    pub async fn recreate_with_public_port(
+        &self,
+        cluster_id: Uuid,
+        slug: &str,
+        postgres_version: &str,
+        cpu_limit: f64,
+        memory_mb: u32,
+        admin_password: &str,
+        public_port: Option<u16>,
+    ) -> Result<String> {
+        let names = self.resource_names(slug);
+        let image = Config::postgres_image(postgres_version)?.to_string();
+
+        if self.docker.container_exists(&names.container_name).await? {
+            if let Err(e) = self.docker.stop_container(&names.container_name, 15).await {
+                info!(error = %e, "stop before recreate");
+            }
+            self.docker
+                .remove_container(&names.container_name, true)
+                .await?;
+        }
+
+        self.docker.ensure_image(&image).await?;
+
+        let mut labels = HashMap::new();
+        labels.insert("pgpanel.cluster_id".into(), cluster_id.to_string());
+        labels.insert("pgpanel.slug".into(), slug.to_string());
+
+        let spec = PostgresContainerSpec {
+            container_name: names.container_name.clone(),
+            volume_name: names.volume_name.clone(),
+            network_name: names.network_name.clone(),
+            image,
+            postgres_password: admin_password.to_string(),
+            cpu_limit,
+            memory_mb,
+            public_port,
+            labels: labels.into_iter().collect(),
+        };
+
+        let container_id = self.docker.create_postgres_container(&spec).await?;
+        self.docker.start_container(&container_id).await?;
+        self.attach_management_network(&names.container_name)
+            .await?;
+        self.wait_healthy(&names.container_name).await?;
+        Ok(container_id)
     }
 
     /// Delete Docker resources according to mode.

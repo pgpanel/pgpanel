@@ -151,7 +151,9 @@ pub struct Cluster {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct InitialDatabaseSpec {
     pub database_name: String,
-    pub role_name: String,
+    /// Defaults to the cluster slug (primary app user).
+    #[serde(default)]
+    pub role_name: Option<String>,
     /// If omitted, a strong password is generated.
     #[serde(default)]
     pub password: Option<String>,
@@ -214,13 +216,19 @@ pub enum DeleteMode {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeleteClusterRequest {
     pub mode: DeleteMode,
-    /// Required for PermanentlyDelete: must match cluster name exactly.
+    /// Must match cluster name exactly for any delete mode.
     pub confirm_name: Option<String>,
     /// Required for PermanentlyDelete when wiping volume.
     #[serde(default)]
     pub confirm_volume_delete: bool,
     #[serde(default)]
     pub final_backup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UpdateClusterNetworkingRequest {
+    pub expose_publicly: bool,
+    pub public_port: Option<u16>,
 }
 
 // ── Database / Role ──────────────────────────────────────────────────────
@@ -249,7 +257,9 @@ pub struct RoleRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateDatabaseRequest {
     pub database_name: String,
-    pub role_name: String,
+    /// Defaults to the cluster slug (primary app user owns every new DB).
+    #[serde(default)]
+    pub role_name: Option<String>,
     #[serde(default)]
     pub generate_password: bool,
     pub password: Option<String>,
@@ -424,6 +434,8 @@ pub enum JobType {
     CreateDatabase,
     DeleteDatabase,
     RotatePassword,
+    /// Recreate container with updated public port / exposure.
+    UpdateNetworking,
     RefreshMetrics,
     /// Probe a node Docker daemon.
     PingNode,
@@ -458,6 +470,7 @@ impl JobType {
             Self::CreateDatabase => "create_database",
             Self::DeleteDatabase => "delete_database",
             Self::RotatePassword => "rotate_password",
+            Self::UpdateNetworking => "update_networking",
             Self::RefreshMetrics => "refresh_metrics",
             Self::PingNode => "ping_node",
             Self::SyncReplica => "sync_replica",
@@ -486,6 +499,7 @@ impl JobType {
             "create_database" => Some(Self::CreateDatabase),
             "delete_database" => Some(Self::DeleteDatabase),
             "rotate_password" => Some(Self::RotatePassword),
+            "update_networking" => Some(Self::UpdateNetworking),
             "refresh_metrics" => Some(Self::RefreshMetrics),
             "ping_node" => Some(Self::PingNode),
             "sync_replica" => Some(Self::SyncReplica),

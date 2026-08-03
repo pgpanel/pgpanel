@@ -69,7 +69,7 @@
 				<Select.Trigger class="w-[200px]">{selectedClusterLabel}</Select.Trigger>
 				<Select.Content>
 					<Select.Item value="all" label="All clusters">All clusters</Select.Item>
-					{#each clusterOptions as opt (opt.value)}
+					{#each clusterOptions as opt, i (`${i}-${opt.value}`)}
 						<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
 					{/each}
 				</Select.Content>
@@ -121,7 +121,7 @@
 					<p class="text-sm text-muted-foreground">No data for the selected cluster.</p>
 				{:else}
 					<div class="space-y-3">
-						{#each filteredClusters as row (row.cluster_id)}
+						{#each filteredClusters as row, i (`${i}-${row.cluster_id}`)}
 							<div class="flex items-center gap-3">
 								<a
 									href={`/clusters/${row.cluster_id}`}
@@ -175,7 +175,7 @@
 							</Table.Row>
 						</Table.Header>
 						<Table.Body>
-							{#each filteredClusters as row (row.cluster_id)}
+							{#each filteredClusters as row, i (`${i}-${row.cluster_id}`)}
 								<Table.Row>
 									<Table.Cell>
 										<a

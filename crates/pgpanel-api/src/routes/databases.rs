@@ -85,16 +85,29 @@ async fn create_database(
     }
 
     validate_safe_name(&req.database_name, "database_name").map_err(AppError)?;
-    validate_safe_name(&req.role_name, "role_name").map_err(AppError)?;
 
-    let payload = serde_json::to_value(&req).unwrap_or_default();
+    let role_name = match req.role_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => {
+            validate_safe_name(r, "role_name").map_err(AppError)?;
+            r.to_string()
+        }
+        None => cluster.slug.clone(),
+    };
+
+    let mut payload_req = req;
+    payload_req.role_name = Some(role_name.clone());
+    // Creating a DB owned by the existing cluster user — never rotate its password.
+    payload_req.generate_password = false;
+    payload_req.password = None;
+
+    let payload = serde_json::to_value(&payload_req).unwrap_or_default();
     let op = state
         .queue
         .enqueue(
             JobType::CreateDatabase,
             Some(id),
             payload,
-            Some(&format!("create-db-{}-{}", id, req.database_name)),
+            Some(&format!("create-db-{}-{}", id, payload_req.database_name)),
         )
         .await
         .map_err(AppError)?;
@@ -104,8 +117,8 @@ async fn create_database(
         Some(&auth.user),
         audit::DATABASE_CREATE,
         "database",
-        Some(&req.database_name),
-        serde_json::json!({"cluster_id": id, "role": req.role_name}),
+        Some(&payload_req.database_name),
+        serde_json::json!({"cluster_id": id, "role": role_name}),
         None,
         None,
     )
@@ -113,7 +126,7 @@ async fn create_database(
 
     Ok(Json(serde_json::json!({
         "operation_id": op,
-        "message": "Database creation queued. Password will be in operation result once complete."
+        "message": "Database creation queued."
     })))
 }
 
