@@ -212,6 +212,21 @@ jobs:
           # Never print key material; only confirm signature artifact size.
           echo "SHA256SUMS.sig created (${SIG_SIZE} bytes, raw Ed25519)"
 
+      - name: Verify signature with installer-compatible OpenSSL
+        run: |
+          set -euo pipefail
+          PUB_DER="$(mktemp)"
+          PUB_PEM="$(mktemp)"
+          trap 'rm -f "${PUB_DER}" "${PUB_PEM}"' EXIT
+
+          {
+            printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'
+            xxd -r -p keys/signing.pub
+          } > "${PUB_DER}"
+          openssl pkey -pubin -inform DER -in "${PUB_DER}" -out "${PUB_PEM}"
+          openssl pkeyutl -verify -rawin -pubin -inkey "${PUB_PEM}" \
+            -sigfile dist/SHA256SUMS.sig -in dist/SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8
         with:

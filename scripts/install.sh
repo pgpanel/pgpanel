@@ -398,7 +398,7 @@ verify_ed25519_sums_signature() {
     sig_bin="$(mktemp)"
     hex_pubkey_to_pem "${key_hex}" "${pem}"
     normalize_signature_file "${sig_file}" "${sig_bin}"
-    if ! openssl pkeyutl -verify -pubin -inkey "${pem}" -sigfile "${sig_bin}" -in "${sums_file}" >/dev/null 2>&1; then
+    if ! openssl pkeyutl -verify -rawin -pubin -inkey "${pem}" -sigfile "${sig_bin}" -in "${sums_file}" >/dev/null 2>&1; then
         rm -f "${pem}" "${sig_bin}"
         die "Ed25519 signature verification failed for SHA256SUMS"
     fi
