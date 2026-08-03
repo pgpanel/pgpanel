@@ -10,60 +10,72 @@ Browser → Cloudflare Edge → cloudflared → http://127.0.0.1:8080 (Caddy) �
 
 Caddy terminates the local reverse proxy and forwards to the active blue/green slot.
 
-## Install cloudflared
+## Installer-managed remotely managed tunnel
 
-Follow [Cloudflare's documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for Ubuntu 24.04.
+Create a remotely managed tunnel in the Cloudflare dashboard and configure its public hostname there. Set the service/origin to exactly:
 
-```bash
-# Example: install from Cloudflare package repository
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt-get update && sudo apt-get install -y cloudflared
+```
+http://127.0.0.1:8080
 ```
 
-## Tunnel configuration
-
-### config.yml example
-
-```yaml
-tunnel: <TUNNEL_UUID>
-credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
-
-ingress:
-  - hostname: panel.example.com
-    service: http://127.0.0.1:8080
-    originRequest:
-      noTLSVerify: false
-      connectTimeout: 30s
-  - service: http_status:404
-```
-
-### DNS
-
-Create a CNAME record pointing `panel.example.com` to `<TUNNEL_UUID>.cfargotunnel.com`.
-
-### systemd
+Then run the PgPanel installer with the token:
 
 ```bash
-sudo cloudflared service install
+sudo env PGPANEL_CLOUDFLARE_TUNNEL_TOKEN='<remotely-managed-token>' \
+  ./scripts/install.sh --exposure cloudflare
+```
+
+The token prompt is silent in interactive runs. Prefer the environment variable over `--cloudflare-token`, because command-line arguments may be visible in shell history or process listings. PgPanel never logs or stores the token. Cloudflare's official `cloudflared service install` command creates the system service and manages what it needs to run the tunnel.
+
+The installer uses Cloudflare's official Ubuntu 24.04 repository:
+
+```text
+deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main
+```
+
+It does not call Cloudflare APIs or attempt to create DNS or hostname routes.
+
+## Manual installation
+
+If you do not use installer-managed exposure, follow [Cloudflare's official package documentation](https://pkg.cloudflare.com/) and [Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/). The official `cloudflared` apt repository uses the distribution-independent `any main` suite shown above.
+
+For a remotely managed tunnel, use the token command shown by the Cloudflare dashboard:
+
+```bash
+sudo cloudflared service install '<remotely-managed-token>'
 sudo systemctl enable --now cloudflared
 ```
 
 ## PgPanel trusted proxy settings
 
-When traffic arrives via `cloudflared` on localhost, enable trusted proxies in `/etc/pgpanel/pgpanel.toml`:
+`--exposure cloudflare` configures trusted loopback proxies and secure cookies in `/etc/pgpanel/pgpanel.toml`:
 
 ```toml
 [trusted_proxies]
 enabled = true
 proxies = ["127.0.0.1", "::1"]
-prefer_cf_connecting_ip = true
+prefer_cf_connecting_ip = false
 
 [session]
 secure = true
 ```
 
 If `cloudflared` connects from a non-loopback address, add its source IP/CIDR to `proxies`.
+
+PgPanel deliberately does not trust `CF-Connecting-IP` directly. It accepts the
+normal forwarded chain only from the configured loopback proxy, preventing a
+client-supplied `CF-Connecting-IP` header from overriding the audit address.
+
+## Service ownership
+
+After successfully installing and activating the service, the installer creates
+`/etc/pgpanel/cloudflared-managed`. PgPanel only reinstalls or removes
+`cloudflared.service` while this marker exists.
+
+If an unmarked service already exists, `--exposure cloudflare` fails without
+altering it. Back up and remove that service yourself before asking PgPanel to
+manage a tunnel. Switching to local or public exposure preserves an unmarked
+service, but removes a PgPanel-managed service and marker.
 
 ## Cloudflare Access (strongly recommended)
 
@@ -79,7 +91,7 @@ Example policy: allow `@yourcompany.com` with one-time PIN or WebAuthn.
 
 - Tunnel target must be `http://127.0.0.1:8080` — **not** the blue/green slots directly
 - Do not expose PostgreSQL (5432) through the same tunnel
-- PgPanel updates do not restart `cloudflared`
+- PgPanel application updates do not restart `cloudflared`; installer repair runs reinstall/restart it when Cloudflare exposure is selected with a token
 - Use Cloudflare WAF rules for additional rate limiting if needed
 
 ## Verification

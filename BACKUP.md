@@ -54,16 +54,16 @@ Consult PostgreSQL documentation for PITR and WAL archiving.
 
 ## Databasus integration
 
-The PgPanel installer does **not** install Databasus. If Databasus is already deployed, you can enable an optional health probe in `pgpanel.toml`:
+The PgPanel installer can optionally deploy Databasus with `--with-databasus`. This is the only Docker-based installer component: it pins `databasus/databasus:v3.51.0`, binds `127.0.0.1:4005`, and persists data in the `databasus-data` Docker volume. Databasus can also be deployed independently.
 
 ```toml
 [databasus]
 enabled = true
-base_url = "https://databasus.internal"
+base_url = "http://127.0.0.1:4005"
 tls_verify = true
 ```
 
-PgPanel only probes `GET /api/v1/system/health`. It does **not** expose backup listing, trigger, or restore operations today. An API key is optional and unused for the health probe. See [docs/databasus.md](docs/databasus.md).
+PgPanel only probes `GET /api/v1/system/health`. It does **not** expose backup listing, trigger, or restore operations today. Configure schedules, storage, credentials, and restores in the Databasus UI. An API key is optional and unused for the health probe. See [docs/databasus.md](docs/databasus.md).
 
 ## Backup schedule recommendations
 

@@ -1,8 +1,30 @@
 # Databasus Integration
 
-PgPanel can optionally probe [Databasus](https://github.com/databasus/databasus) health. PgPanel does **not** implement a backup engine and does **not** install Databasus.
+PgPanel can optionally install and probe [Databasus](https://github.com/databasus/databasus). PgPanel does **not** implement a backup engine.
 
-The PgPanel installer does not deploy or configure Databasus. You must install and operate Databasus separately if you want it.
+Select `--with-databasus` or answer yes at the interactive installer prompt. The installer clearly treats this as an optional Docker-based component; PgPanel itself remains native.
+
+## Installer-managed deployment
+
+The installer:
+
+- Installs Docker Engine and the Compose plugin from Docker's official Ubuntu apt repository only when missing
+- Writes `/opt/databasus/docker-compose.yml`
+- Pins `databasus/databasus:v3.51.0` (verified 2026-07-26; amd64 and arm64), never `latest`
+- Binds `127.0.0.1:4005:4005`, uses persistent volume `databasus-data`, and sets `restart: unless-stopped`
+- Uses the image's `databasus healthcheck` command for container liveness
+- Starts the Compose project and waits for both container health and the documented system-health endpoint
+- Enables PgPanel's health probe at `http://127.0.0.1:4005`
+
+No Databasus remote installer is piped to a shell. Manage the deployment with:
+
+```bash
+sudo docker compose -f /opt/databasus/docker-compose.yml ps
+sudo docker compose -f /opt/databasus/docker-compose.yml pull
+sudo docker compose -f /opt/databasus/docker-compose.yml up -d
+```
+
+The image is deliberately pinned. Review Databasus release notes and update the tag explicitly rather than switching to `latest`.
 
 ## What PgPanel supports today
 
@@ -34,7 +56,7 @@ Edit `/etc/pgpanel/pgpanel.toml`:
 ```toml
 [databasus]
 enabled = true
-base_url = "https://databasus.internal.example"
+base_url = "http://127.0.0.1:4005"
 timeout_secs = 10
 tls_verify = true
 ```
@@ -72,7 +94,7 @@ Viewing the Backups page requires panel read permissions for clusters. Managing 
 
 ## Network
 
-Ensure the PgPanel host can reach `base_url` over HTTP(S). No inbound connection from Databasus to PgPanel is required.
+The installer-managed service is loopback-only. For an independently managed deployment, ensure the PgPanel host can reach `base_url` over HTTP(S). No inbound connection from Databasus to PgPanel is required. Do not publish port 4005 unless Databasus is separately authenticated and protected.
 
 ## Troubleshooting
 

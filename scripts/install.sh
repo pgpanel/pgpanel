@@ -11,6 +11,8 @@ readonly CONFIG_DIR="/etc/pgpanel"
 readonly STATE_DIR="/var/lib/pgpanel"
 readonly RUN_DIR="/run/pgpanel"
 readonly CADDY_DIR="/etc/caddy"
+readonly DATABASUS_DIR="/opt/databasus"
+readonly CLOUDFLARED_MANAGED_MARKER="${CONFIG_DIR}/cloudflared-managed"
 readonly PGPANEL_USER="pgpanel"
 readonly PGPANEL_GROUP="pgpanel"
 readonly GITHUB_OWNER="${PGPANEL_GITHUB_OWNER:-pgpanel}"
@@ -19,6 +21,7 @@ readonly RELEASE_CHANNEL="${PGPANEL_CHANNEL:-stable}"
 readonly CADDY_LISTEN="127.0.0.1:8080"
 readonly BLUE_LISTEN="127.0.0.1:8081"
 readonly GREEN_LISTEN="127.0.0.1:8082"
+readonly DATABASUS_IMAGE="databasus/databasus:v3.51.0"
 
 # Bootstrap trust anchor: 64-char lowercase/uppercase hex of the raw 32-byte
 # Ed25519 public key. Leave empty until a real production key is configured for
@@ -36,12 +39,21 @@ VERSION=""
 FROM_LOCAL=""
 SKIP_RELEASE="0"
 DRY_RUN="0"
+REPAIR="0"
 ALLOW_UNSUPPORTED_OS="0"
+EXPOSURE=""
+HOSTNAME=""
+CLOUDFLARE_TOKEN="${PGPANEL_CLOUDFLARE_TUNNEL_TOKEN:-}"
+# Keep the secret out of every unrelated child process spawned by the installer.
+unset PGPANEL_CLOUDFLARE_TUNNEL_TOKEN
+DATABASUS_CHOICE=""
+DATABASUS_EXPLICIT="0"
 SIGNING_KEY_PATH=""
 ASSET_ROOT=""
 DOWNLOAD_DIR=""
 EXTRACT_DIR=""
 RESOLVED_KEY_HEX=""
+INSTALLED_RELEASE_PATH=""
 
 log() {
     printf '[pgpanel-install] %s\n' "$*"
@@ -63,6 +75,12 @@ Options:
   --from-local PATH           Install from a local release tarball (requires
                               SHA256SUMS, SHA256SUMS.sig, manifest.json beside it)
   --skip-release              Configure systemd/Caddy only (binaries must exist)
+  --repair                    Repair/reinstall the selected release and services
+  --exposure MODE             local, cloudflare, or public
+  --hostname HOST             Required for public exposure and automatic HTTPS
+  --cloudflare-token TOKEN    Remotely managed tunnel token (environment is safer)
+  --with-databasus            Install Databasus with Docker (optional)
+  --without-databasus         Do not install Databasus
   --signing-key PATH          Path to pinned Ed25519 public key (32-byte hex)
   --allow-unsupported-os      Allow non-Ubuntu-24.04 (unsupported)
   --dry-run                   Print actions without making changes
@@ -73,12 +91,16 @@ Environment:
   PGPANEL_GITHUB_REPO             GitHub repository (default: pgpanel)
   PGPANEL_CHANNEL                 Release channel: stable or prerelease
   PGPANEL_SIGNING_PUBLIC_KEY_HEX  Raw 32-byte Ed25519 public key as hex
+  PGPANEL_CLOUDFLARE_TUNNEL_TOKEN Remotely managed Cloudflare Tunnel token
 
 Examples:
   sudo ./scripts/install.sh --version v0.1.0 --signing-key ./keys/signing.pub
   sudo PGPANEL_SIGNING_PUBLIC_KEY_HEX=<64-hex> ./scripts/install.sh
   sudo ./scripts/install.sh --from-local /tmp/pgpanel-linux-amd64.tar.gz \
        --signing-key /tmp/signing.pub
+  sudo PGPANEL_CLOUDFLARE_TUNNEL_TOKEN='<token>' ./scripts/install.sh \
+       --exposure cloudflare
+  sudo ./scripts/install.sh --exposure public --hostname panel.example.com
 EOF
 }
 
@@ -108,6 +130,35 @@ parse_args() {
                 SKIP_RELEASE="1"
                 shift
                 ;;
+            --repair)
+                REPAIR="1"
+                shift
+                ;;
+            --exposure)
+                EXPOSURE="${2:?--exposure requires a value}"
+                shift 2
+                ;;
+            --hostname)
+                HOSTNAME="${2:?--hostname requires a value}"
+                shift 2
+                ;;
+            --cloudflare-token)
+                CLOUDFLARE_TOKEN="${2:?--cloudflare-token requires a value}"
+                log "WARNING: --cloudflare-token can be visible in process history; prefer PGPANEL_CLOUDFLARE_TUNNEL_TOKEN"
+                shift 2
+                ;;
+            --with-databasus)
+                [[ -z "${DATABASUS_CHOICE}" ]] || die "Databasus choice supplied more than once"
+                DATABASUS_CHOICE="yes"
+                DATABASUS_EXPLICIT="1"
+                shift
+                ;;
+            --without-databasus)
+                [[ -z "${DATABASUS_CHOICE}" ]] || die "Databasus choice supplied more than once"
+                DATABASUS_CHOICE="no"
+                DATABASUS_EXPLICIT="1"
+                shift
+                ;;
             --signing-key)
                 SIGNING_KEY_PATH="${2:?--signing-key requires a path}"
                 shift 2
@@ -132,6 +183,103 @@ parse_args() {
 
     if [[ "${SKIP_RELEASE}" == "1" && -n "${FROM_LOCAL}" ]]; then
         die "--skip-release and --from-local are mutually exclusive"
+    fi
+    validate_options
+}
+
+is_valid_hostname() {
+    local hostname="$1"
+    [[ ${#hostname} -le 253 ]] || return 1
+    [[ "${hostname}" == *.* ]] || return 1
+    [[ "${hostname}" != *..* ]] || return 1
+    [[ "${hostname}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || return 1
+    local label
+    local -a labels
+    local IFS='.'
+    read -r -a labels <<<"${hostname}"
+    for label in "${labels[@]}"; do
+        [[ -n "${label}" && ${#label} -le 63 ]] || return 1
+        [[ "${label}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
+is_valid_cloudflare_token() {
+    local token="$1"
+    [[ ${#token} -ge 20 && ${#token} -le 4096 ]] || return 1
+    [[ "${token}" != *[[:space:]]* ]] || return 1
+    [[ "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]
+}
+
+validate_options() {
+    if [[ -n "${EXPOSURE}" ]] && [[ ! "${EXPOSURE}" =~ ^(local|cloudflare|public)$ ]]; then
+        die "--exposure must be local, cloudflare, or public"
+    fi
+    if [[ -n "${HOSTNAME}" ]] && ! is_valid_hostname "${HOSTNAME}"; then
+        die "invalid hostname: use a DNS hostname without scheme, path, wildcard, or port"
+    fi
+    if [[ -n "${CLOUDFLARE_TOKEN}" ]] && ! is_valid_cloudflare_token "${CLOUDFLARE_TOKEN}"; then
+        die "invalid Cloudflare Tunnel token"
+    fi
+    if [[ -n "${HOSTNAME}" && -n "${EXPOSURE}" && "${EXPOSURE}" != "public" ]]; then
+        die "--hostname is only valid with --exposure public"
+    fi
+    if [[ -n "${CLOUDFLARE_TOKEN}" && -n "${EXPOSURE}" && "${EXPOSURE}" != "cloudflare" ]]; then
+        die "Cloudflare token is only valid with --exposure cloudflare"
+    fi
+}
+
+resolve_install_choices() {
+    local choice
+    if [[ -z "${EXPOSURE}" ]]; then
+        if [[ -t 0 ]]; then
+            printf 'Exposure mode [local/cloudflare/public] (local): '
+            read -r choice
+            EXPOSURE="${choice:-local}"
+        else
+            EXPOSURE="local"
+        fi
+    fi
+    validate_options
+
+    if [[ "${EXPOSURE}" == "public" && -z "${HOSTNAME}" ]]; then
+        if [[ -t 0 ]]; then
+            printf 'Public DNS hostname: '
+            read -r HOSTNAME
+        fi
+        [[ -n "${HOSTNAME}" ]] || die "--exposure public requires --hostname HOST"
+        is_valid_hostname "${HOSTNAME}" \
+            || die "invalid hostname: use a DNS hostname without scheme, path, wildcard, or port"
+    fi
+
+    if [[ "${EXPOSURE}" == "cloudflare" && -z "${CLOUDFLARE_TOKEN}" ]]; then
+        if [[ -t 0 ]]; then
+            printf 'Cloudflare Tunnel token (input hidden): '
+            read -r -s CLOUDFLARE_TOKEN
+            printf '\n'
+        fi
+        [[ -n "${CLOUDFLARE_TOKEN}" ]] \
+            || die "cloudflare exposure requires PGPANEL_CLOUDFLARE_TUNNEL_TOKEN or --cloudflare-token"
+        is_valid_cloudflare_token "${CLOUDFLARE_TOKEN}" || die "invalid Cloudflare Tunnel token"
+    fi
+
+    if [[ -z "${DATABASUS_CHOICE}" ]]; then
+        if [[ -t 0 ]]; then
+            printf 'Install Databasus using Docker? [y/N]: '
+            read -r choice
+            case "${choice}" in
+                y | Y | yes | YES)
+                    DATABASUS_CHOICE="yes"
+                    DATABASUS_EXPLICIT="1"
+                    ;;
+                n | N | no | NO | "")
+                    DATABASUS_CHOICE="no"
+                    DATABASUS_EXPLICIT="1"
+                    ;;
+                *) die "answer yes or no for Databasus installation" ;;
+            esac
+        else
+            DATABASUS_CHOICE="no"
+        fi
     fi
 }
 
@@ -655,32 +803,40 @@ install_release_tree() {
     local release_root="$1"
     local bare_version="$2"
     local release_path="${INSTALL_ROOT}/releases/${bare_version}"
+    local staging_path="${INSTALL_ROOT}/releases/.${bare_version}.install.$$"
+    local old_path="${INSTALL_ROOT}/releases/.${bare_version}.replaced.$$"
 
-    if [[ -d "${release_path}" ]]; then
-        log "release ${bare_version} already present at ${release_path}"
-    else
-        log "installing release to ${release_path}"
-        if [[ "${DRY_RUN}" == "1" ]]; then
-            log "[dry-run] cp -a ${release_root} ${release_path}"
-        else
-            run cp -a "${release_root}" "${release_path}"
-            run chown -R root:root "${release_path}"
-            if [[ -d "${release_path}/bin" ]]; then
-                run find "${release_path}/bin" -type f -exec chmod 0755 {} +
-            fi
-        fi
+    INSTALLED_RELEASE_PATH="${release_path}"
+    log "installing verified release to ${release_path}"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] atomically replace ${release_path} from ${release_root}"
+        return 0
     fi
 
-    printf '%s\n' "${release_path}"
+    rm -rf "${staging_path}" "${old_path}"
+    install -d -m 0755 -o root -g root "${staging_path}"
+    cp -a "${release_root}/." "${staging_path}/"
+    chown -R root:root "${staging_path}"
+    find "${staging_path}/bin" -type f -exec chmod 0755 {} +
+    require_release_assets "${staging_path}"
+
+    if [[ -e "${release_path}" || -L "${release_path}" ]]; then
+        mv "${release_path}" "${old_path}"
+    fi
+    if ! mv "${staging_path}" "${release_path}"; then
+        if [[ -e "${old_path}" ]]; then
+            mv "${old_path}" "${release_path}"
+        fi
+        die "failed to activate repaired release ${bare_version}"
+    fi
+    rm -rf "${old_path}"
 }
 
 setup_slot_symlinks() {
     local release_path="$1"
 
     if [[ ! -d "${release_path}/bin" && "${DRY_RUN}" != "1" ]]; then
-        log "release layout has no bin/; skipping slot symlinks"
-        run ln -sfn "${release_path}" "${INSTALL_ROOT}/current"
-        return 0
+        die "verified release layout has no bin/: ${release_path}"
     fi
 
     log "configuring blue/green slot layout"
@@ -695,6 +851,15 @@ setup_slot_symlinks() {
         "${INSTALL_ROOT}/slots" \
         "${INSTALL_ROOT}/slots/blue" \
         "${INSTALL_ROOT}/slots/green"
+
+    if [[ -e "${INSTALL_ROOT}/slots/blue/current" && ! -L "${INSTALL_ROOT}/slots/blue/current" ]]; then
+        log "replacing invalid blue/current path"
+        run rm -rf "${INSTALL_ROOT}/slots/blue/current"
+    fi
+    if [[ -e "${INSTALL_ROOT}/current" && ! -L "${INSTALL_ROOT}/current" ]]; then
+        log "replacing invalid global current path"
+        run rm -rf "${INSTALL_ROOT}/current"
+    fi
 
     if [[ -L "${INSTALL_ROOT}/current" ]]; then
         local current_target
@@ -782,8 +947,9 @@ prepare_bundle_dir() {
         require_release_assets "${ASSET_ROOT}"
     fi
 
-    local release_path
-    release_path="$(install_release_tree "${ASSET_ROOT}" "${bare}")"
+    install_release_tree "${ASSET_ROOT}" "${bare}"
+    local release_path="${INSTALLED_RELEASE_PATH}"
+    [[ -n "${release_path}" ]] || die "internal error: installed release path unset"
     # Prefer installed tree for subsequent packaging copies.
     if [[ "${DRY_RUN}" != "1" && -d "${release_path}" ]]; then
         ASSET_ROOT="${release_path}"
@@ -802,7 +968,15 @@ install_release() {
         [[ -d "${ASSET_ROOT}" ]] || die "cannot resolve ${INSTALL_ROOT}/current"
         require_release_assets "${ASSET_ROOT}"
         log "using existing release at ${ASSET_ROOT}"
+        setup_slot_symlinks "${ASSET_ROOT}"
         return 0
+    fi
+
+    if [[ "${REPAIR}" == "1" && -z "${VERSION}" && -z "${FROM_LOCAL}" \
+        && -f "${INSTALL_ROOT}/current/VERSION" ]]; then
+        VERSION="$(tr -d '[:space:]' <"${INSTALL_ROOT}/current/VERSION")"
+        [[ "${VERSION}" == v* ]] || VERSION="v${VERSION}"
+        log "repair selected currently installed release ${VERSION}"
     fi
 
     resolve_signing_key_hex
@@ -836,6 +1010,128 @@ install_config() {
     log "generating initial configuration at ${config_file}"
     run install -m 0640 -o root -g "${PGPANEL_GROUP}" "${example}" "${config_file}"
     sed -i "s|CHANGE_ME_GENERATE_A_SECURE_SECRET_KEY_AT_LEAST_32_CHARS|${secret_key}|g" "${config_file}"
+}
+
+set_toml_value() {
+    local config_file="$1"
+    local section="$2"
+    local key="$3"
+    local value="$4"
+    local tmp
+    tmp="$(mktemp)"
+
+    awk -v section="${section}" -v key="${key}" -v value="${value}" '
+        BEGIN {
+            in_target = 0
+            saw_section = 0
+            inserted = 0
+        }
+        /^[[:space:]]*\[[^]]+\][[:space:]]*(#.*)?$/ {
+            if (in_target && !inserted) {
+                print key " = " value
+                inserted = 1
+            }
+            normalized = $0
+            sub(/[[:space:]]*#.*$/, "", normalized)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", normalized)
+            in_target = (normalized == "[" section "]")
+            if (in_target) {
+                saw_section = 1
+            }
+            print
+            next
+        }
+        {
+            if (in_target && $0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
+                if (!inserted) {
+                    print key " = " value
+                    inserted = 1
+                }
+                next
+            }
+            print
+        }
+        END {
+            if (in_target && !inserted) {
+                print key " = " value
+                inserted = 1
+            }
+            if (!saw_section) {
+                print ""
+                print "[" section "]"
+                print key " = " value
+            }
+        }
+    ' "${config_file}" >"${tmp}"
+    install -m 0640 -o root -g "${PGPANEL_GROUP}" "${tmp}" "${config_file}"
+    rm -f "${tmp}"
+}
+
+remove_toml_key() {
+    local config_file="$1"
+    local section="$2"
+    local key="$3"
+    local tmp
+    tmp="$(mktemp)"
+
+    awk -v section="${section}" -v key="${key}" '
+        /^[[:space:]]*\[[^]]+\][[:space:]]*(#.*)?$/ {
+            normalized = $0
+            sub(/[[:space:]]*#.*$/, "", normalized)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", normalized)
+            in_target = (normalized == "[" section "]")
+            print
+            next
+        }
+        {
+            if (in_target && $0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
+                next
+            }
+            print
+        }
+    ' "${config_file}" >"${tmp}"
+    install -m 0640 -o root -g "${PGPANEL_GROUP}" "${tmp}" "${config_file}"
+    rm -f "${tmp}"
+}
+
+configure_selected_settings() {
+    local config_file="${CONFIG_DIR}/pgpanel.toml"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] update explicitly selected exposure/Databasus settings in ${config_file}"
+        return 0
+    fi
+
+    case "${EXPOSURE}" in
+        local)
+            set_toml_value "${config_file}" "session" "secure" "false"
+            set_toml_value "${config_file}" "trusted_proxies" "enabled" "true"
+            set_toml_value "${config_file}" "trusted_proxies" "proxies" '["127.0.0.1", "::1"]'
+            set_toml_value "${config_file}" "trusted_proxies" "prefer_cf_connecting_ip" "false"
+            remove_toml_key "${config_file}" "server" "public_base_url"
+            ;;
+        cloudflare)
+            set_toml_value "${config_file}" "session" "secure" "true"
+            set_toml_value "${config_file}" "trusted_proxies" "enabled" "true"
+            set_toml_value "${config_file}" "trusted_proxies" "proxies" '["127.0.0.1", "::1"]'
+            set_toml_value "${config_file}" "trusted_proxies" "prefer_cf_connecting_ip" "false"
+            remove_toml_key "${config_file}" "server" "public_base_url"
+            ;;
+        public)
+            set_toml_value "${config_file}" "server" "public_base_url" "\"https://${HOSTNAME}\""
+            set_toml_value "${config_file}" "session" "secure" "true"
+            set_toml_value "${config_file}" "trusted_proxies" "enabled" "true"
+            set_toml_value "${config_file}" "trusted_proxies" "proxies" '["127.0.0.1", "::1"]'
+            set_toml_value "${config_file}" "trusted_proxies" "prefer_cf_connecting_ip" "false"
+            ;;
+    esac
+
+    if [[ "${DATABASUS_CHOICE}" == "yes" ]]; then
+        set_toml_value "${config_file}" "databasus" "enabled" "true"
+        set_toml_value "${config_file}" "databasus" "base_url" '"http://127.0.0.1:4005"'
+        set_toml_value "${config_file}" "databasus" "tls_verify" "true"
+    elif [[ "${DATABASUS_EXPLICIT}" == "1" ]]; then
+        set_toml_value "${config_file}" "databasus" "enabled" "false"
+    fi
 }
 
 install_signing_key() {
@@ -878,6 +1174,293 @@ install_caddy() {
     run install -m 0644 -o root -g root \
         "${ASSET_ROOT}/packaging/caddy/pgpanel-upstream.caddy" \
         "${CADDY_DIR}/pgpanel-upstream.caddy"
+
+    if [[ "${EXPOSURE}" == "public" ]]; then
+        cat >"${CADDY_DIR}/Caddyfile" <<EOF
+# Managed by the PgPanel installer. Caddy obtains and renews HTTPS certificates.
+# Active upstream remains managed by pgpanel-updater.
+{
+	admin off
+}
+
+http://127.0.0.1:8080 {
+	import pgpanel-upstream.caddy
+}
+
+${HOSTNAME} {
+	import pgpanel-upstream.caddy
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	log {
+		output file /var/log/caddy/pgpanel-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
+EOF
+    fi
+
+    caddy validate --config "${CADDY_DIR}/Caddyfile" --adapter caddyfile >/dev/null \
+        || die "generated Caddy configuration is invalid"
+}
+
+configure_public_firewall() {
+    [[ "${EXPOSURE}" == "public" ]] || return 0
+    if command -v ufw >/dev/null 2>&1 && ufw status | awk 'NR == 1 && $2 == "active" { found=1 } END { exit !found }'; then
+        log "UFW is active; allowing HTTPS and certificate-validation traffic"
+        run ufw allow 80/tcp
+        run ufw allow 443/tcp
+    else
+        log "UFW is not active; no firewall rules changed"
+    fi
+}
+
+cloudflared_management_decision() {
+    local exposure="$1"
+    local managed="$2"
+    local service_present="$3"
+
+    if [[ "${exposure}" == "cloudflare" ]]; then
+        if [[ "${managed}" == "1" ]]; then
+            printf '%s\n' "reinstall"
+        elif [[ "${service_present}" == "1" ]]; then
+            printf '%s\n' "conflict"
+        else
+            printf '%s\n' "install"
+        fi
+    elif [[ "${managed}" == "1" ]]; then
+        printf '%s\n' "remove"
+    else
+        printf '%s\n' "preserve"
+    fi
+}
+
+cloudflared_service_present() {
+    systemctl cat cloudflared.service >/dev/null 2>&1
+}
+
+print_cloudflared_diagnostics() {
+    [[ "${DRY_RUN}" == "1" ]] && return 0
+    printf '\n--- cloudflared service state ---\n' >&2
+    systemctl show cloudflared.service \
+        --property=LoadState,ActiveState,SubState,Result \
+        --no-pager >&2 || true
+    printf '%s\n' \
+        "cloudflared journal omitted to guarantee tunnel tokens cannot enter installer output" >&2
+}
+
+validate_cloudflared_ownership() {
+    [[ "${EXPOSURE}" == "cloudflare" ]] || return 0
+    if [[ ! -f "${CLOUDFLARED_MANAGED_MARKER}" ]] && cloudflared_service_present; then
+        die "cloudflare mode found a pre-existing cloudflared service not managed by PgPanel; back up and remove that service manually, or use local/public mode. PgPanel will not take ownership automatically."
+    fi
+}
+
+configure_cloudflared_lifecycle() {
+    local managed="0"
+    local service_present="0"
+    local action
+    [[ -f "${CLOUDFLARED_MANAGED_MARKER}" ]] && managed="1"
+    cloudflared_service_present && service_present="1"
+    action="$(cloudflared_management_decision "${EXPOSURE}" "${managed}" "${service_present}")"
+
+    case "${action}" in
+        preserve)
+            if [[ "${service_present}" == "1" ]]; then
+                log "preserving pre-existing cloudflared service (not managed by PgPanel)"
+            fi
+            return 0
+            ;;
+        conflict)
+            die "cloudflare mode found a pre-existing cloudflared service not managed by PgPanel; back up and remove that service manually, or use local/public mode. PgPanel will not take ownership automatically."
+            ;;
+        remove)
+            log "removing PgPanel-managed cloudflared service for ${EXPOSURE} exposure"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+                log "[dry-run] uninstall PgPanel-managed cloudflared service and remove marker"
+                return 0
+            fi
+            if [[ "${service_present}" == "1" ]]; then
+                if command -v cloudflared >/dev/null 2>&1; then
+                    if ! cloudflared service uninstall >/dev/null 2>&1; then
+                        print_cloudflared_diagnostics
+                        die "failed to uninstall PgPanel-managed cloudflared service"
+                    fi
+                else
+                    systemctl disable --now cloudflared.service >/dev/null 2>&1 || true
+                    rm -f /etc/systemd/system/cloudflared.service
+                    systemctl daemon-reload
+                fi
+            fi
+            if cloudflared_service_present; then
+                print_cloudflared_diagnostics
+                die "cloudflared service remains installed after PgPanel-managed removal"
+            fi
+            rm -f "${CLOUDFLARED_MANAGED_MARKER}"
+            return 0
+            ;;
+        install | reinstall)
+            ;;
+        *)
+            die "internal error: unknown cloudflared management action ${action}"
+            ;;
+    esac
+
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        log "installing cloudflared from Cloudflare's Ubuntu 24.04 repository"
+        run install -d -m 0755 -o root -g root /usr/share/keyrings
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            log "[dry-run] install Cloudflare repository key and cloudflared package"
+        else
+            curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+                --output /usr/share/keyrings/cloudflare-main.gpg \
+                https://pkg.cloudflare.com/cloudflare-main.gpg
+            chmod 0644 /usr/share/keyrings/cloudflare-main.gpg
+            printf '%s\n' \
+                'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+                >/etc/apt/sources.list.d/cloudflared.list
+        fi
+        run apt-get update -qq
+        run apt-get install -y cloudflared
+    fi
+
+    log "configuring remotely managed Cloudflare Tunnel service"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] ${action} cloudflared system service using supplied token (redacted)"
+        return 0
+    fi
+
+    if [[ "${action}" == "reinstall" && "${service_present}" == "1" ]]; then
+        # Keep the working service up until the replacement binary and token
+        # have passed all local validation.
+        if ! cloudflared service uninstall >/dev/null 2>&1; then
+            print_cloudflared_diagnostics
+            die "failed to uninstall the existing PgPanel-managed cloudflared service"
+        fi
+    fi
+    if ! cloudflared service install "${CLOUDFLARE_TOKEN}" >/dev/null 2>&1; then
+        CLOUDFLARE_TOKEN=""
+        print_cloudflared_diagnostics
+        die "cloudflared service installation failed (token was not logged or retained by PgPanel)"
+    fi
+    CLOUDFLARE_TOKEN=""
+    if ! systemctl enable cloudflared.service >/dev/null 2>&1 \
+        || ! systemctl restart cloudflared.service >/dev/null 2>&1 \
+        || ! systemctl is-active --quiet cloudflared.service; then
+        print_cloudflared_diagnostics
+        die "cloudflared service is not active after installation"
+    fi
+    install -m 0644 -o root -g root /dev/null "${CLOUDFLARED_MANAGED_MARKER}"
+}
+
+install_docker_engine() {
+    local engine_ready="0"
+    local compose_ready="0"
+
+    if command -v docker >/dev/null 2>&1; then
+        if [[ "${DRY_RUN}" != "1" ]]; then
+            systemctl enable --now docker.service >/dev/null 2>&1 || true
+        fi
+        if docker info >/dev/null 2>&1; then
+            engine_ready="1"
+        fi
+        if docker compose version >/dev/null 2>&1; then
+            compose_ready="1"
+        fi
+    fi
+
+    if [[ "${engine_ready}" == "1" && "${compose_ready}" == "1" ]]; then
+        log "Docker Engine and Compose plugin already installed"
+        return 0
+    fi
+
+    log "installing or repairing Docker from Docker's official apt repository"
+    run apt-get install -y --no-install-recommends ca-certificates curl
+    run install -m 0755 -d /etc/apt/keyrings
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] configure Docker's official Ubuntu apt repository"
+    else
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output /etc/apt/keyrings/docker.asc \
+            https://download.docker.com/linux/ubuntu/gpg
+        chmod a+r /etc/apt/keyrings/docker.asc
+        printf '%s\n' \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+            >/etc/apt/sources.list.d/docker.list
+    fi
+    run apt-get update -qq
+    if [[ "${engine_ready}" != "1" ]]; then
+        run apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    elif [[ "${compose_ready}" != "1" ]]; then
+        run apt-get install -y docker-compose-plugin
+    fi
+    run systemctl enable --now docker.service
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        return 0
+    fi
+    docker info >/dev/null 2>&1 \
+        || die "Docker Engine is installed but the root daemon is not usable; check systemctl status docker"
+    docker compose version >/dev/null 2>&1 \
+        || die "Docker Compose plugin is installed but not usable"
+}
+
+install_databasus() {
+    [[ "${DATABASUS_CHOICE}" == "yes" ]] || return 0
+    log "installing optional Docker-based Databasus ${DATABASUS_IMAGE}"
+    install_docker_engine
+    run install -d -m 0750 -o root -g root "${DATABASUS_DIR}"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] write ${DATABASUS_DIR}/docker-compose.yml and start Databasus"
+        return 0
+    fi
+
+    cat >"${DATABASUS_DIR}/docker-compose.yml" <<EOF
+services:
+  databasus:
+    container_name: databasus
+    image: ${DATABASUS_IMAGE}
+    ports:
+      - "127.0.0.1:4005:4005"
+    volumes:
+      - databasus-data:/databasus-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  databasus-data:
+    name: databasus-data
+EOF
+    chmod 0640 "${DATABASUS_DIR}/docker-compose.yml"
+    docker compose -f "${DATABASUS_DIR}/docker-compose.yml" pull
+    docker compose -f "${DATABASUS_DIR}/docker-compose.yml" up -d
+
+    local i health
+    log "waiting for Databasus health"
+    for ((i = 1; i <= 90; i++)); do
+        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' databasus 2>/dev/null || true)"
+        if [[ "${health}" == "healthy" ]] \
+            && curl -fsS http://127.0.0.1:4005/api/v1/system/health >/dev/null 2>&1; then
+            log "Databasus health check passed"
+            return 0
+        fi
+        sleep 2
+    done
+    docker compose -f "${DATABASUS_DIR}/docker-compose.yml" ps >&2 || true
+    docker logs --tail 40 databasus >&2 || true
+    die "Databasus did not become healthy"
 }
 
 install_systemd() {
@@ -908,19 +1491,32 @@ run_migrations() {
 }
 
 start_services() {
-    log "starting pgpanel-helper"
-    run systemctl enable --now pgpanel-helper.service
-
-    log "starting pgpanel-updater daemon"
-    run systemctl enable --now pgpanel-updater.service
-
-    log "starting pgpanel-blue (active slot)"
-    run systemctl enable --now pgpanel-blue.service
+    log "enabling and restarting PgPanel services"
+    if ! run systemctl enable pgpanel-helper.service pgpanel-updater.service pgpanel-blue.service; then
+        print_service_diagnostics
+        die "failed to enable PgPanel services"
+    fi
+    if ! run systemctl restart pgpanel-helper.service pgpanel-updater.service pgpanel-blue.service; then
+        print_service_diagnostics
+        die "failed to restart PgPanel services"
+    fi
     run systemctl stop pgpanel-green.service 2>/dev/null || true
     run systemctl disable pgpanel-green.service 2>/dev/null || true
 
     log "enabling update check timer"
     run systemctl enable --now pgpanel-update-check.timer
+}
+
+print_service_diagnostics() {
+    [[ "${DRY_RUN}" == "1" ]] && return 0
+    local unit
+    printf '\n[pgpanel-install] Service diagnostics:\n' >&2
+    for unit in pgpanel-helper.service pgpanel-updater.service pgpanel-blue.service caddy.service; do
+        printf '\n--- systemctl status %s ---\n' "${unit}" >&2
+        systemctl status "${unit}" --no-pager --full --lines=12 >&2 || true
+        printf '%s\n' "--- recent journal: ${unit} ---" >&2
+        journalctl -u "${unit}" --no-pager --lines=25 --output=short-precise >&2 || true
+    done
 }
 
 wait_for_health() {
@@ -940,49 +1536,91 @@ wait_for_health() {
         fi
         sleep 2
     done
+    print_service_diagnostics
     die "health check failed at ${url}"
 }
 
 start_caddy() {
-    log "starting Caddy"
-    run systemctl enable --now caddy.service
+    log "enabling and restarting Caddy"
+    if ! run systemctl enable caddy.service || ! run systemctl restart caddy.service; then
+        print_service_diagnostics
+        die "failed to restart Caddy"
+    fi
     wait_for_health "http://${CADDY_LISTEN}"
 }
 
+check_services() {
+    [[ "${DRY_RUN}" == "1" ]] && return 0
+    local units=(pgpanel-helper.service pgpanel-updater.service pgpanel-blue.service caddy.service)
+    if [[ "${EXPOSURE}" == "cloudflare" ]]; then
+        units+=(cloudflared.service)
+    fi
+    local unit
+    for unit in "${units[@]}"; do
+        if ! systemctl is-active --quiet "${unit}"; then
+            print_service_diagnostics
+            if [[ "${unit}" == "cloudflared.service" ]]; then
+                print_cloudflared_diagnostics
+            fi
+            die "${unit} is not active after installation"
+        fi
+    done
+}
+
 print_summary() {
+    local access
+    case "${EXPOSURE}" in
+        local)
+            access="http://${CADDY_LISTEN} (host loopback only)"
+            ;;
+        cloudflare)
+            access="Cloudflare dashboard hostname; origin http://${CADDY_LISTEN}"
+            ;;
+        public)
+            access="https://${HOSTNAME}"
+            ;;
+    esac
+
     cat <<EOF
 
 PgPanel installation complete.
 
-  Local URL:     http://${CADDY_LISTEN}
+  Access:        ${access}
+  Local health:  http://${CADDY_LISTEN}
   Active slot:   blue (${BLUE_LISTEN})
   Config:        ${CONFIG_DIR}/pgpanel.toml
   State:         ${STATE_DIR}
   Install root:  ${INSTALL_ROOT}
   Release root:  ${ASSET_ROOT}
+  Exposure:      ${EXPOSURE}
 
-PgPanel listens on loopback only. To expose it remotely, use Cloudflare Tunnel
-or another reverse proxy — do not bind PgPanel to a public interface.
-
-Databasus is not installed by this script. Backup integration is optional and
-external; configure it later in pgpanel.toml if you already run Databasus.
-See docs/databasus.md.
+PgPanel itself remains loopback-only. Caddy exposure is configured for
+${EXPOSURE}. Do not expose PostgreSQL or the blue/green slot ports.
 
 Existing /etc/pgpanel configuration, /var/lib/pgpanel state, and PostgreSQL
 clusters are preserved across re-runs.
 
 Next steps:
-  1. Open http://${CADDY_LISTEN} and complete first-run administrator setup.
-  2. Configure Cloudflare Tunnel to forward to http://${CADDY_LISTEN}
-  3. Before exposing an HTTPS hostname, set session.secure=true and
-     server.public_base_url in ${CONFIG_DIR}/pgpanel.toml, then restart both
-     web slots.
+  1. Open the mode-specific access URL and complete administrator setup.
+  2. Review ${CONFIG_DIR}/pgpanel.toml and service status.
+  3. See INSTALL.md for exposure-mode and Databasus-specific guidance.
 
 EOF
+
+    if [[ "${DATABASUS_CHOICE}" == "yes" ]]; then
+        cat <<EOF
+Databasus is loopback-only at http://127.0.0.1:4005.
+For remote administration, use an SSH tunnel:
+  ssh -L 4005:127.0.0.1:4005 <user>@<server>
+Then open http://127.0.0.1:4005 and manage backups in the Databasus UI.
+
+EOF
+    fi
 }
 
 main() {
     parse_args "$@"
+    resolve_install_choices
     require_root
     verify_ubuntu
     check_commands
@@ -990,7 +1628,12 @@ main() {
     arch="$(detect_arch)"
     log "detected architecture: ${arch}"
     log "release source: github.com/${GITHUB_OWNER}/${GITHUB_REPO}"
+    log "exposure mode: ${EXPOSURE}"
+    if [[ "${REPAIR}" == "1" ]]; then
+        log "repair mode: reinstalling release packaging and restarting services"
+    fi
 
+    validate_cloudflared_ownership
     install_dependencies
     check_post_deps_commands
     ensure_user
@@ -1002,13 +1645,20 @@ main() {
     [[ -n "${ASSET_ROOT}" ]] || die "internal error: ASSET_ROOT unset"
 
     install_config
+    configure_selected_settings
     install_signing_key
     install_caddy
     install_systemd
+    install_databasus
     run_migrations
     start_services
+    configure_public_firewall
     start_caddy
+    configure_cloudflared_lifecycle
+    check_services
     print_summary
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

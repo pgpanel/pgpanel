@@ -31,6 +31,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      - name: Test installer
+        run: bash scripts/test-install.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -239,15 +242,16 @@ jobs:
           body: |
             ## PgPanel ${{ github.ref_name }}
 
-            Self-hosted PostgreSQL management panel for Ubuntu 24.04 (no Docker at runtime).
+            Self-hosted PostgreSQL management panel for Ubuntu 24.04. PgPanel runs natively; Docker is used only when optional installer-managed Databasus is selected.
 
             ### What's included
             - **Web panel** (`pgpanel-web`): Axum + Askama + HTMX/Alpine/Tailwind UI for clusters, databases, roles, SQL console, monitoring, audit, settings, and updates
             - **Privileged helper** (`pgpanel-helper`): Unix-socket daemon for PostgreSQL cluster/ops with peer UID checks
             - **Updater daemon** (`pgpanel-updater`): signed GitHub releases, blue/green slots, Caddy switch, SQLite online backup, rollback
             - **Auth & security**: sessions, CSRF, rate limits, TOTP enrollment + backup codes, re-auth for sensitive actions
-            - **Packaging**: systemd units (helper, updater, blue/green), Caddy reverse proxy on `127.0.0.1:8080`, fail-closed installer with Ed25519 + SHA-256 verification
-            - **Docs**: INSTALL, UPDATE, BACKUP, SECURITY, threat model, Cloudflare Tunnel, Databasus (optional external; not installed by the installer)
+            - **Packaging**: systemd units (helper, updater, blue/green), repairable release/symlink layout, selectable local/Cloudflare/public-HTTPS Caddy exposure, fail-closed Ed25519 + SHA-256 verification
+            - **Optional Databasus**: pinned Docker Compose deployment on loopback; backup management remains in Databasus
+            - **Docs**: INSTALL, UPDATE, BACKUP, SECURITY, threat model, Cloudflare Tunnel, and Databasus
 
             ### Install (Ubuntu 24.04)
             ```bash
@@ -256,7 +260,7 @@ jobs:
             sudo bash /tmp/pgpanel-install.sh --version ${{ github.ref_name }}
             ```
 
-            After install, open `http://127.0.0.1:8080` (or via Cloudflare Tunnel) and complete first-user setup.
+            Interactive installs prompt for exposure and optional Docker-based Databasus. Noninteractive installs default to loopback-only `http://127.0.0.1:8080`; use explicit flags for Cloudflare Tunnel or Caddy-managed public HTTPS.
 
             ### Artifacts
             - `pgpanel-linux-amd64.tar.gz` / `pgpanel-linux-arm64.tar.gz`
