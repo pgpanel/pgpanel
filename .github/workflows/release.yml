@@ -29,16 +29,16 @@ jobs:
             artifact: pgpanel-linux-arm64.tar.gz
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
           target: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
         with:
           workspaces: .
           key: ${{ matrix.target }}
@@ -54,7 +54,7 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642aa39e7199bdb5aadc130
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "20"
           cache: npm
@@ -99,7 +99,7 @@ jobs:
           tar -tzf "dist/${{ matrix.artifact }}" | head -40
 
       - name: Upload artifact
-        uses: actions/upload-artifact@50769540e7f4b0730c9eeff5363960b6c7e25441
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
@@ -111,10 +111,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Download artifacts
-        uses: actions/download-artifact@cc26de661d2e2690ebee7fd0a4d35e79ee11500b
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
@@ -211,7 +211,7 @@ jobs:
           echo "SHA256SUMS.sig created (${SIG_SIZE} bytes, raw Ed25519)"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@c95f6c1f58fa8757d81128e4825cef94b22f5b75
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8
         with:
           files: |
             dist/pgpanel-linux-amd64.tar.gz

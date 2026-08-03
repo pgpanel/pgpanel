@@ -20,16 +20,16 @@ jobs:
         os: [ubuntu-24.04]
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
         with:
           workspaces: .
 
@@ -47,10 +47,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642aa39e7199bdb5aadc130
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "20"
           cache: npm
@@ -69,15 +69,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
