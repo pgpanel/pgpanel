@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pgpanel-protocol",
+    "crates/pgpanel-core",
+    "crates/pgpanel-helper",
+    "crates/pgpanel-web",
+    "crates/pgpanel-updater",
+]
+default-members = [
+    "crates/pgpanel-web",
+    "crates/pgpanel-helper",
+    "crates/pgpanel-updater",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["PgPanel Contributors"]
+repository = "https://github.com/pgpanel/pgpanel"
+rust-version = "1.85"
+
+[workspace.dependencies]
+pgpanel-protocol = { path = "crates/pgpanel-protocol" }
+pgpanel-core = { path = "crates/pgpanel-core" }
+pgpanel-updater = { path = "crates/pgpanel-updater" }
+
+anyhow = "1"
+argon2 = "0.5"
+askama = { version = "0.12", features = ["with-axum"] }
+askama_axum = "0.4"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros", "multipart"] }
+axum-extra = { version = "0.9", features = ["cookie", "form", "typed-header"] }
+base32 = "0.5"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+cookie = "0.18"
+data-encoding = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures = "0.3"
+hex = "0.4"
+hmac = "0.12"
+http = "1"
+mime_guess = "2"
+nix = { version = "0.29", features = ["socket", "uio", "user", "fs"] }
+once_cell = "1"
+password-hash = "0.5"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rust-embed = { version = "8", features = ["compression", "include-exclude"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+thiserror = "2"
+time = { version = "0.3", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+toml = "0.8"
+totp-rs = { version = "5", features = ["otpauth", "gen_secret"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "set-header", "compression-gzip", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
+
+[profile.dev]
+opt-level = 0

@@ -1,0 +1,15 @@
+[package]
+name = "pgpanel-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Typed Unix-socket protocol between pgpanel-web and pgpanel-helper"
+rust-version.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

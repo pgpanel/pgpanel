@@ -1,0 +1,36 @@
+[package]
+name = "pgpanel-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Blue-green updater for PgPanel with signed release verification"
+rust-version.workspace = true
+
+[[bin]]
+name = "pgpanel-updater"
+path = "src/main.rs"
+
+[dependencies]
+pgpanel-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+ed25519-dalek = { workspace = true }
+flate2 = "1"
+hex = { workspace = true }
+nix = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = "0.4"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true }
