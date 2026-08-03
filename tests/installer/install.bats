@@ -93,6 +93,18 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "Databasus data directory permits internal postgres traversal" {
+  tmp="$(mktemp -d)"
+  DATA_DIR="$tmp/data"
+  ENABLE_DATABASUS=1
+  ensure_databasus_data_dir
+  [ -d "$DATA_DIR/databasus" ]
+  run stat -c '%a' "$DATA_DIR/databasus"
+  [ "$status" -eq 0 ]
+  [ "$output" = "755" ]
+  rm -rf "$tmp"
+}
+
 @test "Tunnel rendering omits host ports and includes both sidecars" {
   tmp="$(mktemp -d)"
   INSTALL_DIR="$tmp"

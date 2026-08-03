@@ -1049,6 +1049,15 @@ install_docker() {
 }
 
 # ── Directories ──────────────────────────────────────────────────────────────
+ensure_databasus_data_dir() {
+  [[ "$ENABLE_DATABASUS" -eq 1 ]] || return 0
+  mkdir -p "${DATA_DIR}/databasus"
+  # Databasus starts an internal PostgreSQL process as its postgres user.
+  # Keep the parent data tree private, but allow traversal of this bind mount
+  # so the image can access /databasus-data/pgdata after it chowns that tree.
+  chmod 0755 "${DATA_DIR}/databasus"
+}
+
 create_directories() {
   local dirs=(
     "$INSTALL_DIR"
@@ -1066,7 +1075,8 @@ create_directories() {
   for d in "${dirs[@]}"; do
     mkdir -p "$d"
   done
-  chmod 700 "$DATA_DIR" "${DATA_DIR}/panel" "${DATA_DIR}/clusters" "${DATA_DIR}/databasus" "$BACKUP_CACHE_DIR"
+  chmod 700 "$DATA_DIR" "${DATA_DIR}/panel" "${DATA_DIR}/clusters" "$BACKUP_CACHE_DIR"
+  ensure_databasus_data_dir
   chmod 755 "$INSTALL_DIR" "$LOG_DIR" "$PGPANEL_ETC_DIR"
   chown -R root:root "$PGPANEL_ETC_DIR" "$INSTALL_DIR" 2>/dev/null || true
   log_ok "Directories ready"
@@ -1998,6 +2008,7 @@ build_and_start() {
   INSTALL_PHASE="start"
   resolve_panel_image
   ensure_cloudflare_tunnel_token
+  ensure_databasus_data_dir
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_HOST_DATA" "$DATA_DIR"
