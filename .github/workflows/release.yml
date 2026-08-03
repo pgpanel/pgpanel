@@ -66,6 +66,8 @@ jobs:
         run: |
           npm ci
           ./scripts/build-frontend.sh
+          test -s static/css/app.css
+          test "$(wc -c < static/css/app.css)" -ge 5000
 
       - name: Build release binaries
         env:
@@ -245,7 +247,10 @@ jobs:
             Self-hosted PostgreSQL management panel for Ubuntu 24.04. PgPanel runs natively; Docker is used only when optional installer-managed Databasus is selected.
 
             ### Fixes in this release
-            - **Caddy Host matching behind Cloudflare Tunnel**: listen with `:8080 { bind 127.0.0.1 }` instead of `http://127.0.0.1:8080`, so requests that preserve the public hostname (e.g. `Host: panel.example.com`) are proxied instead of returning an empty `200`
+            - **UI stylesheet behind Cloudflare**: versioned `/static/css/app.css?v=…` URLs bypass poisoned empty CDN cache entries; CSS/JS serve long-lived immutable cache headers
+            - **Frontend build guard**: `pgpanel-web` build fails if compiled Tailwind CSS is missing, so unstyled binaries cannot ship
+            - **UI polish**: IBM Plex fonts, Alpine `pgpanelApp()` fix, sidebar icons, teal design tokens, auth brand layout
+            - **Caddy Host matching behind Cloudflare Tunnel** (from v0.1.5): `:8080 { bind 127.0.0.1 }` accepts public Host headers
 
             ### What's included
             - **Web panel** (`pgpanel-web`): Axum + Askama + HTMX/Alpine/Tailwind UI for clusters, databases, roles, SQL console, monitoring, audit, settings, and updates

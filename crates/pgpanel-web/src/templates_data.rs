@@ -66,6 +66,7 @@ pub struct LayoutCtx {
     pub flash: Option<FlashMessage>,
     pub breadcrumbs: Vec<Breadcrumb>,
     pub active_nav: String,
+    pub asset_v: String,
 }
 
 /// Auth layout context.
@@ -73,6 +74,7 @@ pub struct LayoutCtx {
 pub struct AuthLayoutCtx {
     pub title: String,
     pub flash: Option<FlashMessage>,
+    pub asset_v: String,
 }
 
 #[derive(Template)]
@@ -389,6 +391,7 @@ pub fn layout_ctx(
         flash: None,
         breadcrumbs: vec![],
         active_nav: active_nav.into(),
+        asset_v: asset_version().to_string(),
     }
 }
 
@@ -396,7 +399,12 @@ pub fn auth_layout(title: impl Into<String>) -> AuthLayoutCtx {
     AuthLayoutCtx {
         title: title.into(),
         flash: None,
+        asset_v: asset_version().to_string(),
     }
+}
+
+fn asset_version() -> &'static str {
+    pgpanel_core::VERSION
 }
 
 pub fn role_label(role: Role) -> &'static str {

@@ -1,12 +1,22 @@
+window.pgpanelApp = function () {
+  return {
+    init() {
+      Alpine.store('theme').init();
+    },
+  };
+};
+
 document.addEventListener('alpine:init', () => {
   Alpine.store('theme', {
     mode: localStorage.getItem('pgpanel-theme') || 'system',
+    isDark: false,
     init() {
       this.apply();
     },
     apply() {
       const dark = this.mode === 'dark' || (this.mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.classList.toggle('dark', dark);
+      this.isDark = dark;
     },
     toggle() {
       this.mode = document.documentElement.classList.contains('dark') ? 'light' : 'dark';

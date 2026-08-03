@@ -11,7 +11,7 @@ ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 
 all: build
 
-build:
+build: frontend
 	$(CARGO) build --release
 
 test:
