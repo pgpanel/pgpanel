@@ -80,9 +80,15 @@ engedélyezve. A telepítő a Cloudflare DNS/ingress konfigurációját nem mód
 ## Databasus
 
 A Databasus hivatalos `databasus/databasus:v3.51.0` image-ként indul,
-adatkönyvtára `/var/lib/pgpanel/databasus`, belső portja `4005`. Nincs host
-portja és nem kap Docker socketet. A panel által létrehozott PostgreSQL
-konténereket a `pgpanel_database_management` hálózaton éri el.
+adatkönyvtára `/var/lib/pgpanel/databasus` (`0755`, hogy a belső PostgreSQL
+user bejárhassa), belső portja `4005`. Nincs host portja és nem kap Docker
+socketet. A panel által létrehozott PostgreSQL konténereket a
+`pgpanel_database_management` hálózaton éri el.
+
+A Caddy/Tunnel origin **nem** vár a Databasus healthy állapotára: a sidecar
+helyreállása soha nem blokkolhatja a panelt. Az installer indulás előtt
+javítja a jogosultságokat, törli a sikertelen init maradékát, és a Databasust
+előbb indítja.
 
 Az első belépés után a Databasus UI-ban manuálisan:
 

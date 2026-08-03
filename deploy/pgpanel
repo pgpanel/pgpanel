@@ -172,7 +172,17 @@ main() {
   local cmd="${1:-}"
   case "$cmd" in
     status) cmd_status ;;
-    start) need_root "$@"; compose up -d --remove-orphans ;;
+    start)
+      need_root "$@"
+      if [[ "${ENABLE_DATABASUS:-1}" -eq 1 ]]; then
+        mkdir -p "${DATA_DIR}/databasus"
+        chmod 0755 "${DATA_DIR}/databasus"
+        if [[ -d "${DATA_DIR}/databasus/pgdata" && ! -f "${DATA_DIR}/databasus/pgdata/PG_VERSION" ]]; then
+          rm -rf "${DATA_DIR}/databasus/pgdata"
+        fi
+      fi
+      compose up -d --remove-orphans
+      ;;
     stop) need_root "$@"; compose stop ;;
     restart) need_root "$@"; compose restart ;;
     logs) shift; compose logs -f --tail=200 "$@" ;;

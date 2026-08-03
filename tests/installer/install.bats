@@ -105,6 +105,32 @@ setup() {
   rm -rf "$tmp"
 }
 
+@test "Databasus data directory removes incomplete pgdata leftovers" {
+  tmp="$(mktemp -d)"
+  DATA_DIR="$tmp/data"
+  ENABLE_DATABASUS=1
+  mkdir -p "$DATA_DIR/databasus/pgdata"
+  chmod 0700 "$DATA_DIR/databasus"
+  touch "$DATA_DIR/databasus/pgdata/orphan"
+  ensure_databasus_data_dir
+  [ ! -d "$DATA_DIR/databasus/pgdata" ]
+  run stat -c '%a' "$DATA_DIR/databasus"
+  [ "$status" -eq 0 ]
+  [ "$output" = "755" ]
+  rm -rf "$tmp"
+}
+
+@test "Databasus data directory keeps initialized postgres cluster" {
+  tmp="$(mktemp -d)"
+  DATA_DIR="$tmp/data"
+  ENABLE_DATABASUS=1
+  mkdir -p "$DATA_DIR/databasus/pgdata"
+  echo 16 >"$DATA_DIR/databasus/pgdata/PG_VERSION"
+  ensure_databasus_data_dir
+  [ -f "$DATA_DIR/databasus/pgdata/PG_VERSION" ]
+  rm -rf "$tmp"
+}
+
 @test "Tunnel rendering omits host ports and includes both sidecars" {
   tmp="$(mktemp -d)"
   INSTALL_DIR="$tmp"
@@ -128,6 +154,10 @@ setup() {
   [ "$status" -eq 0 ]
   run grep -q 'backup.example.com' "$tmp/deploy/Caddyfile"
   [ "$status" -eq 0 ]
+  # Caddy must not wait for Databasus health — recovering sidecar must not
+  # take down the panel origin.
+  run grep -A6 'depends_on:' "$tmp/deploy/compose.yml"
+  [[ "$output" != *databasus* ]]
   rm -rf "$tmp"
 }
 

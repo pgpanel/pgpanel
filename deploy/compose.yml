@@ -46,8 +46,6 @@ services:
     depends_on:
       panel:
         condition: service_healthy
-      databasus:
-        condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -79,10 +77,10 @@ services:
       - "4005"
     healthcheck:
       test: ["CMD", "databasus", "healthcheck"]
-      interval: 30s
+      interval: 5s
       timeout: 5s
-      retries: 3
-      start_period: 60s
+      retries: 18
+      start_period: 90s
     logging:
       driver: json-file
       options:
