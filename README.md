@@ -1,6 +1,6 @@
 # PgPanel
 
-PgPanel is a self-hosted PostgreSQL management panel for Ubuntu Server 24.04. It provides a secure web interface for managing native PostgreSQL clusters created with `postgresql-common`, without requiring Docker or a Node.js runtime for PgPanel itself. Docker is optional for installer-managed Databasus.
+PgPanel is a self-hosted PostgreSQL management panel for Ubuntu Server 24.04. It provides a secure web interface for managing native PostgreSQL clusters created with `postgresql-common`, without requiring Docker or a Node.js runtime for PgPanel itself. The installer provisions PostgreSQL 16, 17, and 18 from the official PGDG Apt repository; Docker is optional for installer-managed Databasus.
 
 ## Features
 

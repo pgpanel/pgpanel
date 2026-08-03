@@ -247,6 +247,7 @@ jobs:
             Self-hosted PostgreSQL management panel for Ubuntu 24.04. PgPanel runs natively; Docker is used only when optional installer-managed Databasus is selected.
 
             ### Fixes in this release
+            - **PostgreSQL provisioning**: the installer now configures the official PGDG Apt repository and installs PostgreSQL server versions 16, 17, and 18 automatically on Ubuntu 24.04
             - **Rate limiting**: increased the default authenticated API limit from 120 to 600 requests per IP per minute; existing installations with the old shipped default are migrated during repair
             - **Health and static traffic**: `/health/*` and `/static/*` no longer consume the API rate-limit bucket, preventing Caddy health checks from receiving `429` and marking the upstream unavailable
             - **Update dialogs**: moved install/rollback dialogs outside the 3-second HTMX polling fragment so they remain open while status refreshes

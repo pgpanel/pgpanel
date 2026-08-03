@@ -383,6 +383,13 @@ install_dependencies() {
         sqlite3 \
         openssl
 
+    install_postgresql_repository
+    log "installing supported PostgreSQL server versions (16, 17, 18)"
+    run apt-get install -y --no-install-recommends \
+        postgresql-16 \
+        postgresql-17 \
+        postgresql-18
+
     if ! command -v caddy >/dev/null 2>&1; then
         log "installing Caddy from official repository"
         if [[ ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]]; then
@@ -398,6 +405,43 @@ install_dependencies() {
     else
         log "Caddy already installed"
     fi
+}
+
+install_postgresql_repository() {
+    local key_path="/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc"
+    local source_path="/etc/apt/sources.list.d/pgdg.sources"
+    local architecture
+
+    log "configuring the official PostgreSQL Apt repository"
+    architecture="$(dpkg --print-architecture)"
+    case "${architecture}" in
+        amd64 | arm64) ;;
+        *) die "unsupported PostgreSQL repository architecture: ${architecture}" ;;
+    esac
+
+    run install -d -m 0755 /usr/share/postgresql-common/pgdg
+    if [[ ! -f "${key_path}" ]]; then
+        run curl -fsSL \
+            -o "${key_path}" \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    else
+        log "PostgreSQL repository key already exists"
+    fi
+
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "[dry-run] write ${source_path} for noble-pgdg (${architecture})"
+    else
+        cat >"${source_path}" <<EOF
+Types: deb deb-src
+URIs: https://apt.postgresql.org/pub/repos/apt
+Suites: noble-pgdg
+Architectures: ${architecture}
+Components: main
+Signed-By: ${key_path}
+EOF
+    fi
+
+    run apt-get update -qq
 }
 
 ensure_user() {

@@ -1,13 +1,13 @@
 # Installation Guide
 
-PgPanel installs natively on **Ubuntu Server 24.04 LTS** (amd64 or arm64). PostgreSQL may already be installed; the installer does not modify existing clusters. Docker is used only when the optional Databasus installation is selected.
+PgPanel installs natively on **Ubuntu Server 24.04 LTS** (amd64 or arm64). The installer installs PostgreSQL server versions 16, 17, and 18 from the official PostgreSQL Apt repository; existing clusters are preserved. Docker is used only when the optional Databasus installation is selected.
 
 ## Prerequisites
 
 - Root access
 - Outbound HTTPS (GitHub releases, Caddy repository)
 - A trusted Ed25519 release public key (see [Signing key](#signing-key))
-- `postgresql-common` installed (installer pulls it if missing)
+- PostgreSQL server packages are installed by the installer; existing clusters are preserved
 - A choice of local-only, Cloudflare Tunnel, or public HTTPS exposure
 
 ## Automated install
@@ -70,7 +70,7 @@ The same pinned key is written to `/etc/pgpanel/signing.pub` on first install (e
 ## What the installer does
 
 1. Enforces Ubuntu 24.04 (unless `--allow-unsupported-os`) and detects architecture
-2. Installs dependencies: `caddy`, `postgresql-common`, `jq`, `xxd`, `sqlite3`, `openssl`
+2. Installs dependencies: `caddy`, PostgreSQL 16/17/18 from the official PGDG repository, `jq`, `xxd`, `sqlite3`, `openssl`
 3. Creates `pgpanel` system user and group
 4. Creates `/opt/pgpanel`, `/etc/pgpanel`, `/var/lib/pgpanel`, `/run/pgpanel`
 5. Downloads `pgpanel-linux-{amd64,arm64}.tar.gz`, `SHA256SUMS`, `SHA256SUMS.sig`, and `manifest.json` over HTTPS with size limits
@@ -85,18 +85,11 @@ The same pinned key is written to `/etc/pgpanel/signing.pub` on first install (e
 
 Re-running the installer performs the same repair behavior as `--repair`: verified release files and packaging are reinstalled, incomplete release trees and links are repaired, and services are restarted. Existing `/etc/pgpanel` configuration, `/var/lib/pgpanel` state, and PostgreSQL clusters are preserved except for settings explicitly selected on the command line.
 
-The installer does not install a PostgreSQL server major version or alter
-existing clusters. Install the server package for every version you want to
-create, for example:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y postgresql-16
-```
-
-Cluster creation requires the selected version's `initdb` binary. If it is
-missing, PgPanel reports the exact package command instead of only returning
-`pg_createcluster failed`.
+The installer does not delete or alter existing PostgreSQL clusters. Package
+installation may create the distribution's initial `main` cluster for a newly
+installed major version. Cluster creation requires the selected version's
+`initdb` binary; if it is missing, PgPanel reports the exact package command
+instead of only returning `pg_createcluster failed`.
 
 The default authenticated API limit is 600 requests per IP per minute. Login
 attempts remain limited separately to 10 per five minutes. Health checks and
