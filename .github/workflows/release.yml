@@ -96,7 +96,9 @@ jobs:
           printf '%s\n' "${PGPANEL_BUILD_TIME}" > "${STAGE}/BUILD_TIME"
 
           tar -czf "dist/${{ matrix.artifact }}" -C "${STAGE}" .
-          tar -tzf "dist/${{ matrix.artifact }}" | head -40
+          # Listing is informational only; do not fail the job on SIGPIPE from head.
+          tar -tzf "dist/${{ matrix.artifact }}" | head -40 || true
+          ls -lh "dist/${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
