@@ -244,6 +244,9 @@ jobs:
 
             Self-hosted PostgreSQL management panel for Ubuntu 24.04. PgPanel runs natively; Docker is used only when optional installer-managed Databasus is selected.
 
+            ### Fixes in this release
+            - **Caddy Host matching behind Cloudflare Tunnel**: listen with `:8080 { bind 127.0.0.1 }` instead of `http://127.0.0.1:8080`, so requests that preserve the public hostname (e.g. `Host: panel.example.com`) are proxied instead of returning an empty `200`
+
             ### What's included
             - **Web panel** (`pgpanel-web`): Axum + Askama + HTMX/Alpine/Tailwind UI for clusters, databases, roles, SQL console, monitoring, audit, settings, and updates
             - **Privileged helper** (`pgpanel-helper`): Unix-socket daemon for PostgreSQL cluster/ops with peer UID checks
@@ -253,11 +256,11 @@ jobs:
             - **Optional Databasus**: pinned Docker Compose deployment on loopback; backup management remains in Databasus
             - **Docs**: INSTALL, UPDATE, BACKUP, SECURITY, threat model, Cloudflare Tunnel, and Databasus
 
-            ### Install (Ubuntu 24.04)
+            ### Install / repair (Ubuntu 24.04)
             ```bash
             curl -fsSL -o /tmp/pgpanel-install.sh \
               "https://raw.githubusercontent.com/pgpanel/pgpanel/${{ github.ref_name }}/scripts/install.sh"
-            sudo bash /tmp/pgpanel-install.sh --version ${{ github.ref_name }}
+            sudo bash /tmp/pgpanel-install.sh --version ${{ github.ref_name }} --repair
             ```
 
             Interactive installs prompt for exposure and optional Docker-based Databasus. Noninteractive installs default to loopback-only `http://127.0.0.1:8080`; use explicit flags for Cloudflare Tunnel or Caddy-managed public HTTPS.

@@ -1191,7 +1191,9 @@ install_caddy() {
 	admin off
 }
 
-http://127.0.0.1:8080 {
+# Loopback listener accepts any Host header (local health checks / SSH tunnels).
+:8080 {
+	bind 127.0.0.1
 	import pgpanel-upstream.caddy
 }
 

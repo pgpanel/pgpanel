@@ -29,7 +29,7 @@ The helper validates peer UID (must match `pgpanel`), enforces operation timeout
 
 ### Caddy
 
-- **Bind:** `127.0.0.1:8080`
+- **Bind:** `:8080` with `bind 127.0.0.1` (any Host header; loopback only)
 - **Config:** `/etc/caddy/Caddyfile` imports `/etc/caddy/pgpanel-upstream.caddy`
 - **Role:** Reverse proxy to the active blue or green slot; health-aware upstream selection
 

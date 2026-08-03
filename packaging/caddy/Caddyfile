@@ -1,6 +1,10 @@
 # PgPanel local reverse proxy — loopback only (127.0.0.1:8080).
 # Cloudflare Tunnel or another edge proxy should target http://127.0.0.1:8080
 #
+# Listen on :8080 with bind 127.0.0.1 so any Host header is accepted.
+# A site address of http://127.0.0.1:8080 would reject tunnel traffic that
+# preserves the public hostname (e.g. Host: panel.example.com).
+#
 # Do not expose this port on a public interface.
 # Active upstream is switched atomically by pgpanel-updater via pgpanel-upstream.caddy.
 
@@ -10,7 +14,9 @@
 	admin off
 }
 
-http://127.0.0.1:8080 {
+:8080 {
+	bind 127.0.0.1
+
 	import pgpanel-upstream.caddy
 
 	# Security headers (defense in depth behind tunnel)

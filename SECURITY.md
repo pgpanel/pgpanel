@@ -32,7 +32,7 @@ We aim to acknowledge reports within 3 business days.
 ### Network exposure
 
 - Application slots bind to `127.0.0.1` only.
-- Caddy listens on `127.0.0.1:8080`.
+- Caddy listens on loopback `:8080` (`bind 127.0.0.1`) so tunnel traffic with a public Host header is accepted.
 - External access should use Cloudflare Tunnel or an equivalent private ingress — not a public bind.
 
 ### Authentication

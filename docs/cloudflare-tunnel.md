@@ -110,6 +110,7 @@ curl -s http://127.0.0.1:8080/health/ready
 
 | Symptom | Check |
 |---------|-------|
+| Empty `200` / white page externally, works on `127.0.0.1:8080` | Caddy must listen with `:8080 { bind 127.0.0.1 }`, not `http://127.0.0.1:8080`. The latter only matches `Host: 127.0.0.1`; Cloudflare Tunnel preserves the public hostname. |
 | 502 from Cloudflare | `systemctl status caddy pgpanel-blue` |
 | Redirect loop | `session.secure` vs actual scheme |
 | Wrong client IP in audit | `trusted_proxies` configuration |
