@@ -2528,6 +2528,50 @@ send_test_notification() {
   esac
 }
 
+
+# Near-zero downtime panel recreate (SQLite-safe: never two writers).
+# Pull first while old serves, then short stop+start, then wait /health.
+recreate_panel_near_zero() {
+  local image="${1:-$PGPANEL_IMAGE}"
+  local rc=0
+  (
+    cd "${INSTALL_DIR}/deploy"
+    export PGPANEL_IMAGE="$image" PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
+    set -a
+    # shellcheck source=/dev/null
+    source "${INSTALL_DIR}/.env"
+    set +a
+    export PGPANEL_IMAGE="$image"
+
+    log_info "Near-zero cutover: recreating panel (${image}) — Caddy stays up"
+    if docker compose -f compose.yml up -d --no-deps --force-recreate --no-build --wait --wait-timeout 120 panel 2>/dev/null; then
+      log_ok "Panel healthy (compose --wait)"
+      exit 0
+    fi
+
+    log_info "compose --wait unavailable — force-recreate + health poll"
+    if ! PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --no-deps --force-recreate --no-build panel; then
+      log_warn "Panel-only recreate failed — falling back to full stack up"
+      prepare_compose_networks
+      PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build || exit 1
+    fi
+
+    local i=0 cid=""
+    while (( i < 90 )); do
+      cid="$(docker ps -q --filter 'label=com.docker.compose.service=panel' | head -1 || true)"
+      if [[ -n "$cid" ]] && docker exec "$cid" curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+        log_ok "Panel healthy after ${i}s"
+        exit 0
+      fi
+      sleep 1
+      i=$((i + 1))
+    done
+    log_error "Panel did not become healthy within 90s"
+    exit 1
+  ) || rc=$?
+  return "$rc"
+}
+
 # ── Update mode (no data loss) ───────────────────────────────────────────────
 # Default: image-only — curl VERSION + docker pull + recreate panel.
 # No git clone/fetch. App binary/UI live in the Docker image.
@@ -2627,25 +2671,10 @@ do_update() {
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
 
+  # Pull while the old panel is still serving (no downtime yet).
   ensure_panel_image
 
-  (
-    cd "${INSTALL_DIR}/deploy"
-    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
-    set -a
-    # shellcheck source=/dev/null
-    source "${INSTALL_DIR}/.env"
-    set +a
-    # Recreate only the panel — leave Caddy up.
-    log_info "Recreating panel service with ${PGPANEL_IMAGE}"
-    if ! PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --no-deps --force-recreate --no-build panel; then
-      log_warn "Panel-only recreate failed — falling back to full stack up"
-      prepare_compose_networks
-      PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build
-    fi
-  )
-
-  if ! health_check; then
+  if ! recreate_panel_near_zero "$PGPANEL_IMAGE"; then
     log_error "Update health check failed — rollback available from ${backup_dir}"
     if confirm "Restore previous .env and recreate previous image?" "Y"; then
       cp -a "${backup_dir}/.env" "${INSTALL_DIR}/.env" 2>/dev/null || true

@@ -150,6 +150,7 @@ CACHE_DIR="${HOME}/.cache/pgpanel-buildx"
 mkdir -p "$CACHE_DIR"
 
 set -x
+export DOCKER_BUILDKIT=1
 docker buildx build \
   --platform "$PLATFORMS" \
   -f deploy/Dockerfile \

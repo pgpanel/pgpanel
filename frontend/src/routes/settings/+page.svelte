@@ -746,7 +746,7 @@
 			<HugeiconsIcon icon={RefreshIcon} class="mx-auto mb-4 size-10 animate-spin text-primary" strokeWidth={2} />
 			<h2 class="mb-2 text-lg font-semibold">Updating…</h2>
 			<p class="text-sm text-muted-foreground">
-				Downloading image, then recreating the panel via Docker Compose. This tab will reconnect automatically.
+				Near-zero cutover: image pull first (no downtime), then a short panel recreate. This tab reconnects automatically.
 			</p>
 		</div>
 	</div>

@@ -1,14 +1,17 @@
 # syntax=docker/dockerfile:1.7
+# BuildKit required (docker buildx). Cargo/npm caches make incremental builds fast.
 
 # ── Frontend build ────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefer-offline --no-audit --no-fund || npm install --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm run build
 
-# ── Rust build ────────────────────────────────────────────────────────────
+# ── Rust build (cached deps + incremental target) ─────────────────────────
 FROM rust:1-bookworm AS backend
 WORKDIR /src
 
@@ -25,15 +28,54 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && protoc --version \
     && rustfmt --version
 
-ENV PROTOC=/usr/bin/protoc
+ENV PROTOC=/usr/bin/protoc \
+    CARGO_TERM_COLOR=always \
+    CARGO_INCREMENTAL=1
 
+# 1) Manifest-only layer — dependency compile is cached across source edits
 COPY Cargo.toml Cargo.lock* ./
+COPY crates/pgpanel-api/Cargo.toml crates/pgpanel-api/
+COPY crates/pgpanel-core/Cargo.toml crates/pgpanel-core/
+COPY crates/pgpanel-docker/Cargo.toml crates/pgpanel-docker/
+COPY crates/pgpanel-postgres/Cargo.toml crates/pgpanel-postgres/
+COPY crates/pgpanel-backup/Cargo.toml crates/pgpanel-backup/
+COPY crates/pgpanel-databasus/Cargo.toml crates/pgpanel-databasus/
+COPY crates/pgpanel-jobs/Cargo.toml crates/pgpanel-jobs/
+
+RUN mkdir -p \
+      crates/pgpanel-api/src \
+      crates/pgpanel-core/src \
+      crates/pgpanel-docker/src \
+      crates/pgpanel-postgres/src \
+      crates/pgpanel-backup/src \
+      crates/pgpanel-databasus/src \
+      crates/pgpanel-jobs/src \
+      migrations \
+    && printf 'fn main() {}\n' > crates/pgpanel-api/src/main.rs \
+    && for c in pgpanel-core pgpanel-docker pgpanel-postgres pgpanel-backup pgpanel-databasus pgpanel-jobs; do \
+         printf '// dep-cache stub\n' > "crates/${c}/src/lib.rs"; \
+       done \
+    && printf '0.0.0\n' > VERSION \
+    && touch migrations/.keep
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release -p pgpanel-api \
+    && rm -rf crates/*/src
+
+# 2) Real sources — only this layer invalidates on code change; target cache keeps deps warm
 COPY crates ./crates
 COPY migrations ./migrations
 COPY VERSION ./VERSION
 
-# Build release binary
-RUN cargo build --release -p pgpanel-api
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    find crates -name '*.rs' -exec touch {} + \
+    && cargo build --release -p pgpanel-api \
+    && cp /src/target/release/pgpanel /src/pgpanel \
+    && strip /src/pgpanel || true
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -61,7 +103,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=backend /src/target/release/pgpanel /app/pgpanel
+COPY --from=backend /src/pgpanel /app/pgpanel
 COPY --from=backend /src/migrations /app/migrations
 COPY --from=frontend /frontend/build /app/static
 COPY VERSION /app/VERSION
@@ -73,12 +115,10 @@ ENV PGPANEL_BIND=0.0.0.0:8080 \
     PGPANEL_VERSION=${PGPANEL_VERSION} \
     RUST_LOG=pgpanel=info,tower_http=info
 
-# Docker socket is mounted at runtime (privileged risk — see SECURITY.md).
-
 EXPOSE 8080
 VOLUME ["/var/lib/pgpanel"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=12 \
   CMD curl -fsS http://127.0.0.1:8080/health || exit 1
 
 WORKDIR /app

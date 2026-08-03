@@ -65,6 +65,9 @@ services:
     # pull_policy=missing keeps a temporary registry outage from blocking restarts.
     pull_policy: ${PGPANEL_PULL_POLICY:-missing}
     restart: unless-stopped
+    # Keep cutover short — SQLite cannot be shared by two panels, so we stop
+    # the old instance quickly and bring the new one up (near-zero downtime).
+    stop_grace_period: 3s
     env_file:
       - ../.env
     environment:
@@ -91,10 +94,10 @@ services:
       - "8080"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     logging:
       driver: json-file
       options:

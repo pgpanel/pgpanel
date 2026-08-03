@@ -21,12 +21,14 @@ use pgpanel_core::error::{Error, Result};
 use crate::types::{ContainerInspect, ContainerStats, PostgresContainerSpec};
 
 /// Shell script run inside a short-lived `docker:cli` helper.
-/// Must not stop the panel from inside the panel process — Compose recreates it.
+/// Near-zero downtime, SQLite-safe cutover:
+/// 1) pull while old panel still serves
+/// 2) stop old with short grace + start new (never two writers on panel.db)
+/// 3) wait until /health is OK before exiting
 const PANEL_UPDATER_SCRIPT: &str = r#"
 set -eu
 echo "[pgpanel-updater] target=$PGPANEL_TARGET_IMAGE version=$PGPANEL_TARGET_VERSION"
 echo "[pgpanel-updater] compose_dir=$COMPOSE_DIR env_file=$ENV_FILE"
-sleep 5
 
 upsert_env() {
   key="$1"
@@ -42,6 +44,33 @@ upsert_env() {
     echo "${key}=${val}" >> "$file"
   fi
 }
+
+wait_panel_healthy() {
+  max="${1:-90}"
+  i=0
+  while [ "$i" -lt "$max" ]; do
+    cid="$(docker ps -q -f label=com.docker.compose.service=panel | head -1 || true)"
+    if [ -n "$cid" ]; then
+      if docker exec "$cid" curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+        echo "[pgpanel-updater] healthy after ${i}s"
+        return 0
+      fi
+      # Compose healthcheck status as secondary signal
+      st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+      if [ "$st" = "healthy" ]; then
+        echo "[pgpanel-updater] docker health=healthy after ${i}s"
+        return 0
+      fi
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  echo "[pgpanel-updater] health wait timed out after ${max}s"
+  return 1
+}
+
+# Brief pause so apply HTTP response can flush; pull happens next while old still serves.
+sleep 2
 
 if [ -n "${ENV_FILE:-}" ] && [ -d "$(dirname "$ENV_FILE")" ]; then
   upsert_env PGPANEL_IMAGE "$PGPANEL_TARGET_IMAGE" "$ENV_FILE" || true
@@ -59,18 +88,26 @@ export PGPANEL_IMAGE="$PGPANEL_TARGET_IMAGE"
 export PGPANEL_VERSION="$PGPANEL_TARGET_VERSION"
 export PGPANEL_PULL_POLICY=missing
 
-echo "[pgpanel-updater] pulling panel image"
-docker compose pull panel || docker pull "$PGPANEL_TARGET_IMAGE"
+echo "[pgpanel-updater] pulling panel image (old panel still serving)"
+docker pull "$PGPANEL_TARGET_IMAGE" || docker compose pull panel
 
-echo "[pgpanel-updater] recreating panel via compose"
-if ! docker compose up -d --no-deps --force-recreate --pull missing panel; then
-  echo "[pgpanel-updater] force-recreate failed — retrying plain up"
-  if ! docker compose up -d --no-deps panel; then
-    echo "[pgpanel-updater] FAILED"
-    exit 1
-  fi
+echo "[pgpanel-updater] near-zero cutover: recreate panel only"
+# Prefer compose --wait (healthy) when available; else recreate + manual health poll.
+if docker compose up -d --no-deps --force-recreate --no-build --wait --wait-timeout 120 panel; then
+  echo "[pgpanel-updater] compose --wait succeeded"
+  exit 0
 fi
 
+echo "[pgpanel-updater] --wait unsupported or failed — force-recreate + health poll"
+if ! docker compose up -d --no-deps --force-recreate --no-build panel; then
+  echo "[pgpanel-updater] force-recreate failed — retrying plain up"
+  docker compose up -d --no-deps --no-build panel || {
+    echo "[pgpanel-updater] FAILED"
+    exit 1
+  }
+fi
+
+wait_panel_healthy 90
 echo "[pgpanel-updater] done"
 "#;
 
@@ -183,11 +220,8 @@ impl DockerClient {
             return Err(Error::Validation("panel image is not allowlisted".into()));
         }
 
-        // Phase 1: pull while old panel stays up.
+        // Phase 1: pull while old panel stays up (skip redundant :latest).
         self.pull_panel_image(new_image).await?;
-        let _ = self
-            .pull_panel_image("ghcr.io/pgpanel/pgpanel:latest")
-            .await;
 
         let panel_id = self.find_panel_container_id().await?.ok_or_else(|| {
             Error::Docker(

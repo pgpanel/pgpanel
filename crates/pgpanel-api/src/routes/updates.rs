@@ -130,7 +130,24 @@ async fn status(State(s): State<AppState>, _a: AuthUser) -> ApiResult<Json<serde
 async fn check(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&a)?;
     refresh_latest_cache(&s).await?;
-    Ok(Json(status_json(&s).await?))
+    let st = status_json(&s).await?;
+
+    // Pre-pull the target image in the background so Apply is mostly cutover.
+    if st["update_available"].as_bool().unwrap_or(false) {
+        if let Some(v) = st["latest_version"].as_str().map(str::to_string) {
+            let image = format!("ghcr.io/pgpanel/pgpanel:{v}");
+            let docker = s.provisioner.docker().clone();
+            tokio::spawn(async move {
+                if let Err(e) = docker.pull_panel_image(&image).await {
+                    error!(error = %e, %image, "background pre-pull failed");
+                } else {
+                    tracing::info!(%image, "background pre-pull completed");
+                }
+            });
+        }
+    }
+
+    Ok(Json(st))
 }
 
 async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_json::Value>> {
@@ -168,7 +185,7 @@ async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
 
     Ok(Json(serde_json::json!({
         "status": "started",
-        "message": "Update started. A helper container will recreate the panel via Docker Compose — keep this tab open.",
+        "message": "Near-zero update started: image pre-pulled if possible, then a short cutover while Caddy stays up. Keep this tab open.",
         "version": v,
         "image": image,
         "poll_health": true,
