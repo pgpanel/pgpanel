@@ -16,8 +16,8 @@ pub struct PeerCredentials {
 /// Read credentials from an accepted Unix stream.
 #[cfg(target_os = "linux")]
 pub fn peer_credentials<F: AsFd>(stream: &F) -> std::io::Result<PeerCredentials> {
-    use nix::sys::socket::sockopt::PeerCred;
-    let cred = getsockopt(stream, PeerCred).map_err(std::io::Error::other)?;
+    use nix::sys::socket::sockopt::PeerCredentials as PeerCredOpt;
+    let cred = getsockopt(stream, PeerCredOpt).map_err(std::io::Error::other)?;
     Ok(PeerCredentials { uid: cred.uid() })
 }
 
