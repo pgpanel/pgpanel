@@ -20,7 +20,7 @@ A telepítő **nem kér** Git repository URL-t. A hivatalos forrás rögzített:
 | Komponens | A VPS-en |
 |-----------|---------|
 | Rust API + frontend | **Előre buildelt** Docker image: `ghcr.io/pgpanel/pgpanel:<verzió>` |
-| Caddy, Databasus | Hivatalos image pull |
+| Caddy, Databasus, cloudflared | Hivatalos, verziózott image pull |
 | PostgreSQL clusterek | Dinamikus container a panel által |
 
 A CI (`.github/workflows/docker-publish.yml`) multi-arch (`amd64`/`arm64`) image-t tol a GHCR-re. A VPS csak `docker compose pull` + `up`.
@@ -55,6 +55,44 @@ A frissítő:
 - panel SQLite  
 - PostgreSQL Docker volume-ok  
 - Databasus adatok  
+- Cloudflare Tunnel token (`/etc/pgpanel/cloudflare-tunnel.env`)
+
+## Cloudflare Tunnel
+
+Friss telepítéskor a telepítő bekéri a Tunnel tokent és a Databasus
+hostname-et. A token a Cloudflare Dashboardban létrehozott remote Tunnel
+`Add a replica` parancsából származó token legyen.
+
+Tunnel módban:
+
+- a `cloudflared` konténer a `pgpanel_frontend` hálózaton fut;
+- Caddy csak belső `http://caddy:80` originként működik;
+- a hoston nincs 80/443 Caddy port bind, csak a Tunnel kimenő kapcsolata kell;
+- a Dashboardban két Public Hostname route szükséges:
+  - `<panel-domain>` → `http://caddy:80`
+  - `<databasus-domain>` → `http://caddy:80`
+- a token `/etc/pgpanel/cloudflare-tunnel.env` fájlban marad, `0600`
+  jogosultsággal.
+
+A Tunnel csatlakozásához a VPS-ről kimenő TCP/UDP 7844 és TCP 443 legyen
+engedélyezve. A telepítő a Cloudflare DNS/ingress konfigurációját nem módosítja.
+
+## Databasus
+
+A Databasus hivatalos `databasus/databasus:v3.51.0` image-ként indul,
+adatkönyvtára `/var/lib/pgpanel/databasus`, belső portja `4005`. Nincs host
+portja és nem kap Docker socketet. A panel által létrehozott PostgreSQL
+konténereket a `pgpanel_database_management` hálózaton éri el.
+
+Az első belépés után a Databasus UI-ban manuálisan:
+
+1. hozz létre Databasus admin felhasználót;
+2. add hozzá a klasztert `pgpanel_pg_<slug>` hosttal és `5432` porttal;
+3. állítsd be a storage-ot, retentiont, WAL/PITR-t és restore verificationt;
+4. futtass explicit backup + restore próbát.
+
+A PgPanel natív backup motorja ettől függetlenül megmarad; a telepítő nem
+állít be nem dokumentált Databasus HTTP API hívásokat.
 
 ## Verzió
 

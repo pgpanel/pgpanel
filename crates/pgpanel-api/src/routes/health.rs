@@ -14,9 +14,20 @@ pub fn routes() -> Router<AppState> {
 }
 
 async fn health() -> Json<HealthResponse> {
+    let version = std::fs::read_to_string("/app/VERSION")
+        .ok()
+        .map(|v| v.trim().trim_start_matches('v').to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            std::env::var("PGPANEL_VERSION")
+                .ok()
+                .map(|v| v.trim().trim_start_matches('v').to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
     Json(HealthResponse {
         status: "ok".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version,
     })
 }
 

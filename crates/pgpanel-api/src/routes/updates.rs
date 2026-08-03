@@ -1,9 +1,9 @@
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use pgpanel_core::error::Error;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::auth::{require_admin, AuthUser};
 use crate::error::{ApiResult, AppError};
@@ -37,16 +37,35 @@ async fn put(s: &AppState, k: &str, v: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn current() -> String {
-    std::env::var("PGPANEL_VERSION")
-        .ok()
-        .filter(|x| !x.is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").into())
+/// Version baked into the running image — never trust `.env` PGPANEL_VERSION alone
+/// (host update can bump .env before the container image actually changes).
+fn current_image_version() -> String {
+    // 1) File shipped inside the image (authoritative)
+    for path in ["/app/VERSION", "./VERSION"] {
+        if let Ok(v) = std::fs::read_to_string(path) {
+            let v = v.trim().trim_start_matches('v').to_string();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    // 2) Env only as fallback (may be stale/wrong from host .env)
+    if let Ok(v) = std::env::var("PGPANEL_VERSION") {
+        let v = v.trim().trim_start_matches('v').to_string();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    env!("CARGO_PKG_VERSION").into()
+}
+
+fn normalize_ver(s: &str) -> String {
+    s.trim().trim_start_matches('v').trim().to_string()
 }
 
 fn newer(a: &str, b: &str) -> bool {
     let p = |s: &str| {
-        s.trim_start_matches('v')
+        normalize_ver(s)
             .split('.')
             .map(|x| x.parse::<u64>().unwrap_or(0))
             .collect::<Vec<_>>()
@@ -59,28 +78,59 @@ fn newer(a: &str, b: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn versions_equal(a: &str, b: &str) -> bool {
+    normalize_ver(a) == normalize_ver(b)
+}
+
 async fn fetch_latest() -> Result<(String, String), AppError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
+        .user_agent("pgpanel-updater/1.0")
         .build()
         .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+
+    // 1) VERSION on main (primary)
     let url = "https://raw.githubusercontent.com/pgpanel/pgpanel/main/VERSION";
-    let v = client
-        .get(url)
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(text) = resp.text().await {
+                let v = normalize_ver(&text);
+                if !v.is_empty() && v != "unknown" {
+                    return Ok((
+                        v.clone(),
+                        format!("https://github.com/pgpanel/pgpanel/releases/tag/v{v}"),
+                    ));
+                }
+            }
+        }
+        Ok(resp) => {
+            warn!(status = %resp.status(), "VERSION fetch non-success");
+        }
+        Err(e) => {
+            warn!(error = %e, "VERSION fetch failed — trying GitHub releases API");
+        }
+    }
+
+    // 2) GitHub latest release tag
+    let rel = client
+        .get("https://api.github.com/repos/pgpanel/pgpanel/releases/latest")
+        .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| AppError(Error::Internal(format!("version check failed: {e}"))))?
-        .text()
+        .map_err(|e| AppError(Error::Internal(format!("releases API failed: {e}"))))?;
+    let body: serde_json::Value = rel
+        .json()
         .await
-        .map_err(|e| AppError(Error::Internal(e.to_string())))?
-        .trim()
-        .to_string();
-    if v.is_empty() {
-        return Err(AppError(Error::Internal("empty VERSION response".into())));
-    }
+        .map_err(|e| AppError(Error::Internal(e.to_string())))?;
+    let tag = body
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .map(normalize_ver)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| AppError(Error::Internal("no tag_name in releases/latest".into())))?;
     Ok((
-        v.clone(),
-        format!("https://github.com/pgpanel/pgpanel/releases/tag/v{v}"),
+        tag.clone(),
+        format!("https://github.com/pgpanel/pgpanel/releases/tag/v{tag}"),
     ))
 }
 
@@ -89,31 +139,93 @@ async fn refresh_latest_cache(s: &AppState) -> Result<String, AppError> {
     put(s, "update.latest_version", &v).await?;
     put(s, "update.latest_url", &u).await?;
     put(s, "update.last_checked_at", &Utc::now().to_rfc3339()).await?;
+    info!(latest = %v, "update latest cache refreshed");
     Ok(v)
 }
 
-async fn status_json(s: &AppState) -> Result<serde_json::Value, AppError> {
+fn cache_is_stale(checked: &str) -> bool {
+    if checked.is_empty() {
+        return true;
+    }
+    let Ok(ts) = DateTime::parse_from_rfc3339(checked) else {
+        return true;
+    };
+    let age = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
+    age > Duration::minutes(5)
+}
+
+/// Best-effort: image tag of the running compose `panel` container.
+async fn running_panel_image_tag(s: &AppState) -> Option<String> {
+    match s.provisioner.docker().running_panel_image().await {
+        Ok(Some(img)) => {
+            let tag = img.rsplit_once(':').map(|(_, t)| t).unwrap_or(img.as_str());
+            let tag = normalize_ver(tag);
+            if tag.is_empty() || tag == "latest" {
+                None
+            } else {
+                Some(tag)
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            warn!(error = %e, "could not inspect running panel image");
+            None
+        }
+    }
+}
+
+async fn status_json(s: &AppState, force_refresh: bool) -> Result<serde_json::Value, AppError> {
     let mut latest = setting(s, "update.latest_version")
         .await?
         .unwrap_or_default();
-    let url = setting(s, "update.latest_url").await?.unwrap_or_default();
+    let mut url = setting(s, "update.latest_url").await?.unwrap_or_default();
     let channel = setting(s, "update.channel")
         .await?
         .unwrap_or_else(|| "stable".into());
-    let checked = setting(s, "update.last_checked_at")
+    let mut checked = setting(s, "update.last_checked_at")
         .await?
         .unwrap_or_default();
-    let cv = current();
 
-    if latest.is_empty() {
-        if let Ok(v) = refresh_latest_cache(s).await {
-            latest = v;
+    let cv = current_image_version();
+    let running_tag = running_panel_image_tag(s).await;
+
+    if force_refresh || latest.is_empty() || cache_is_stale(&checked) {
+        match refresh_latest_cache(s).await {
+            Ok(v) => {
+                latest = v;
+                url = setting(s, "update.latest_url")
+                    .await?
+                    .unwrap_or(url);
+                checked = setting(s, "update.last_checked_at")
+                    .await?
+                    .unwrap_or(checked);
+            }
+            Err(e) => {
+                warn!(error = %e.0, "refresh latest failed — using cache if any");
+            }
         }
     }
 
-    let available = !latest.is_empty() && newer(&cv, &latest);
+    // Effective installed version: prefer running container image tag when it
+    // disagrees with /app/VERSION or env (detects .env ahead of image).
+    let effective = running_tag
+        .clone()
+        .filter(|t| !versions_equal(t, &cv))
+        .map(|t| {
+            warn!(
+                file_version = %cv,
+                running_image_tag = %t,
+                "panel version mismatch — using running image tag for update detection"
+            );
+            t
+        })
+        .unwrap_or_else(|| cv.clone());
+
+    let available = !latest.is_empty() && newer(&effective, &latest);
     Ok(serde_json::json!({
-        "current_version": cv,
+        "current_version": effective,
+        "image_version": cv,
+        "running_image_tag": running_tag,
         "latest_version": if latest.is_empty() { serde_json::Value::Null } else { latest.into() },
         "latest_url": url,
         "update_available": available,
@@ -124,13 +236,13 @@ async fn status_json(s: &AppState) -> Result<serde_json::Value, AppError> {
 }
 
 async fn status(State(s): State<AppState>, _a: AuthUser) -> ApiResult<Json<serde_json::Value>> {
-    Ok(Json(status_json(&s).await?))
+    // Soft refresh when cache is stale so the UI does not stick on an old latest.
+    Ok(Json(status_json(&s, false).await?))
 }
 
 async fn check(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&a)?;
-    refresh_latest_cache(&s).await?;
-    let st = status_json(&s).await?;
+    let st = status_json(&s, true).await?;
 
     // Pre-pull the target image in the background so Apply is mostly cutover.
     if st["update_available"].as_bool().unwrap_or(false) {
@@ -141,7 +253,7 @@ async fn check(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
                 if let Err(e) = docker.pull_panel_image(&image).await {
                     error!(error = %e, %image, "background pre-pull failed");
                 } else {
-                    tracing::info!(%image, "background pre-pull completed");
+                    info!(%image, "background pre-pull completed");
                 }
             });
         }
@@ -152,9 +264,16 @@ async fn check(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
 
 async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&a)?;
-    let st = status_json(&s).await?;
+    // Always re-fetch latest before applying — never trust a stale cache.
+    let st = status_json(&s, true).await?;
     if !st["update_available"].as_bool().unwrap_or(false) {
-        return Ok(Json(serde_json::json!({"status": "up_to_date"})));
+        return Ok(Json(serde_json::json!({
+            "status": "up_to_date",
+            "message": "Already on the latest version",
+            "current_version": st.get("current_version"),
+            "latest_version": st.get("latest_version"),
+            "running_image_tag": st.get("running_image_tag"),
+        })));
     }
     let v = st["latest_version"]
         .as_str()
@@ -165,11 +284,8 @@ async fn apply(State(s): State<AppState>, a: AuthUser) -> ApiResult<Json<serde_j
     let image_for_task = image.clone();
     let version_for_task = v.clone();
 
-    // Pull + schedule a detached Compose updater. Never stop this process
-    // in-place — that permanently downs the panel (unless-stopped + explicit stop).
     let docker = s.provisioner.docker().clone();
     tokio::spawn(async move {
-        // Let the HTTP response flush before heavy pull / helper start.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         if let Err(e) = docker
             .schedule_detached_panel_upgrade(&image_for_task, &version_for_task)

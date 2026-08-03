@@ -68,3 +68,72 @@ setup() {
   run have_cmd this-binary-should-not-exist-pgpanel-xyz
   [ "$status" -ne 0 ]
 }
+
+@test "is_valid_hostname accepts a public hostname" {
+  run is_valid_hostname "backup.example.com"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_valid_hostname rejects URLs and malformed labels" {
+  run is_valid_hostname "https://backup.example.com"
+  [ "$status" -ne 0 ]
+  run is_valid_hostname "backup..example.com"
+  [ "$status" -ne 0 ]
+}
+
+@test "is_valid_tunnel_token rejects short or whitespace values" {
+  run is_valid_tunnel_token "short-token"
+  [ "$status" -ne 0 ]
+  run is_valid_tunnel_token "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa token"
+  [ "$status" -ne 0 ]
+}
+
+@test "is_valid_tunnel_token accepts a complete token-shaped value" {
+  run is_valid_tunnel_token "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghijklmnopqrstuvwxyz"
+  [ "$status" -eq 0 ]
+}
+
+@test "Tunnel rendering omits host ports and includes both sidecars" {
+  tmp="$(mktemp -d)"
+  INSTALL_DIR="$tmp"
+  DATA_DIR="$tmp/data"
+  PGPANEL_VERSION="0.1.14"
+  PGPANEL_IMAGE=""
+  UPDATE_CHANNEL="stable"
+  ENABLE_DATABASUS=1
+  USE_CLOUDFLARE_TUNNEL=1
+  DATABASUS_PUBLIC=1
+  PANEL_DOMAIN="panel.example.com"
+  DATABASUS_DOMAIN="backup.example.com"
+  LETSENCRYPT_EMAIL="admin@example.com"
+  render_compose
+  render_caddyfile
+  run grep -q '^    ports:' "$tmp/deploy/compose.yml"
+  [ "$status" -ne 0 ]
+  run grep -q 'databasus/databasus:v3.51.0' "$tmp/deploy/compose.yml"
+  [ "$status" -eq 0 ]
+  run grep -q 'cloudflare/cloudflared:2026.7.3' "$tmp/deploy/compose.yml"
+  [ "$status" -eq 0 ]
+  run grep -q 'backup.example.com' "$tmp/deploy/Caddyfile"
+  [ "$status" -eq 0 ]
+  rm -rf "$tmp"
+}
+
+@test "Tunnel rendering never writes the token into generated Compose" {
+  tmp="$(mktemp -d)"
+  INSTALL_DIR="$tmp"
+  DATA_DIR="$tmp/data"
+  PGPANEL_VERSION="0.1.14"
+  PGPANEL_IMAGE=""
+  UPDATE_CHANNEL="stable"
+  ENABLE_DATABASUS=1
+  USE_CLOUDFLARE_TUNNEL=1
+  DATABASUS_PUBLIC=1
+  PANEL_DOMAIN="panel.example.com"
+  DATABASUS_DOMAIN="backup.example.com"
+  CLOUDFLARE_TUNNEL_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-value"
+  render_compose
+  run grep -q 'secret-value' "$tmp/deploy/compose.yml"
+  [ "$status" -ne 0 ]
+  rm -rf "$tmp"
+}

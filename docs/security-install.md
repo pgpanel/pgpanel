@@ -7,10 +7,10 @@
 | Item | Rule |
 |------|------|
 | Generation | `openssl rand` only |
-| Storage | `/opt/pgpanel/.env`, mode `0600`, owner `root` |
+| Storage | `/opt/pgpanel/.env` and, when enabled, `/etc/pgpanel/cloudflare-tunnel.env`, mode `0600`, owner `root` |
 | Re-install | Existing `.env` is **never** regenerated on update/repair |
 | Logs | `mask_secrets` strips passwords, tokens, keys, connection strings |
-| Compose | Secrets via `env_file`, never as CLI `-e` for long-lived secrets |
+| Compose | Secrets via root-only `env_file`, never as CLI `-e` for long-lived secrets |
 | Passwords | The first admin password is entered in the web setup; database and storage secrets are encrypted or kept in the root-only `.env` |
 
 Non-secret installer choices live in `/etc/pgpanel/installer.conf` (no raw passwords).
@@ -34,26 +34,30 @@ Installer `security-check` verifies Databasus does not mount the socket and flag
 
 | Port / surface | Default |
 |----------------|---------|
-| 80/443 | public via Caddy only (panel domain) |
+| 80/443 | public via Caddy only in direct mode; no host binding in Tunnel mode |
 | 8080 panel | internal Docker network |
-| 8000 Databasus | **internal only** (`http://databasus:8000`); public subdomain only if installer `DATABASUS_PUBLIC=1` |
+| 4005 Databasus | **internal only** (`http://databasus:4005`); public hostname only through Caddy/Tunnel |
+| cloudflared | outbound-only connector; no host port |
 | 5432 PostgreSQL | **not** opened; no public PG domain. Clusters dual-home: private `pgpanel_net_*` + shared `pgpanel_database_management` |
 
 Docker networks:
 
 | Network | Purpose | External |
 |---------|---------|----------|
-| `pgpanel_frontend` | Caddy ↔ panel | yes (edge) |
-| `pgpanel_internal` | panel ↔ Databasus | stack-local |
+| `pgpanel_frontend` | cloudflared/Caddy ↔ panel + Databasus | yes (edge) |
+| `pgpanel_internal` | stack-local services | stack-local |
 | `pgpanel_database_management` | panel + Databasus ↔ `pgpanel_pg_*` DNS | **internal: true** |
 
-UFW order: **SSH first**, then 80/443, then enable. PostgreSQL is not globally allowed.
+UFW order: **SSH first**, then direct-mode 80/443 only, then enable.
+Tunnel mode intentionally leaves inbound web ports unadded; PostgreSQL is not
+globally allowed.
 
 ## HTTPS
 
 - Default recommendation: HTTPS on  
 - HTTP-only requires explicit confirmation with production warning  
 - Security headers set in Caddyfile (HSTS, CSP, X-Frame-Options, etc.)
+- Cloudflare Tunnel terminates public TLS; Caddy uses HTTP only on the private Docker network in Tunnel mode.
 
 ## Security score
 
@@ -64,6 +68,7 @@ UFW order: **SSH first**, then 80/443, then enable. PostgreSQL is not globally a
 - public PG ports default  
 - UFW active  
 - Databasus socket absence  
+- Tunnel token permissions and absence of direct Caddy host ports
 - privileged containers  
 - backup storage configured  
 - free disk  

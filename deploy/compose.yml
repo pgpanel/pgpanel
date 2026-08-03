@@ -1,9 +1,9 @@
 # PgPanel production stack
 # Panel image is pre-built (GHCR). VPS does NOT compile Rust/frontend by default.
 # PostgreSQL clusters are created dynamically by the panel — not listed here.
-# Backups: native engine inside the panel (no Databasus service).
+# Backups: native engine inside the panel plus optional manual Databasus sidecar.
 #
-# SECURITY: panel mounts Docker socket (host-root equivalent). See SECURITY.md.
+# SECURITY: only panel mounts Docker socket (host-root equivalent). See SECURITY.md.
 
 name: pgpanel
 
@@ -28,11 +28,14 @@ services:
   caddy:
     image: caddy:2.9-alpine
     restart: unless-stopped
+    # Direct-mode baseline. Tunnel installs render this service without host
+    # ports so only cloudflared can reach the HTTP origin.
     ports:
       - "80:80"
       - "443:443"
     environment:
       PGPANEL_DOMAIN: ${PGPANEL_DOMAIN:-}
+      DATABASUS_DOMAIN: ${DATABASUS_DOMAIN:-backup.example.com}
       CADDY_EMAIL: ${CADDY_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -41,7 +44,10 @@ services:
     networks:
       - pgpanel_frontend
     depends_on:
-      - panel
+      panel:
+        condition: service_healthy
+      databasus:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -57,6 +63,64 @@ services:
     tmpfs:
       - /tmp
       - /config/caddy
+
+  databasus:
+    image: databasus/databasus:v3.51.0
+    pull_policy: missing
+    restart: unless-stopped
+    environment:
+      IS_DISABLE_ANONYMOUS_TELEMETRY: "true"
+    volumes:
+      - ${PGPANEL_HOST_DATA:-/var/lib/pgpanel}/databasus:/databasus-data
+    networks:
+      - pgpanel_frontend
+      - pgpanel_database_management
+    expose:
+      - "4005"
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+
+  cloudflared:
+    # The installer renders a matching HTTP-only Caddyfile and removes the
+    # direct Caddy ports when Tunnel mode is selected.
+    profiles: ["cloudflare"]
+    image: cloudflare/cloudflared:2026.7.3
+    pull_policy: missing
+    restart: unless-stopped
+    env_file:
+      - /etc/pgpanel/cloudflare-tunnel.env
+    environment:
+      TUNNEL_METRICS: 0.0.0.0:20241
+    command: ["tunnel", "run"]
+    depends_on:
+      caddy:
+        condition: service_started
+    networks:
+      - pgpanel_frontend
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
 
   panel:
     # Pre-built only — installer never builds on the VPS.

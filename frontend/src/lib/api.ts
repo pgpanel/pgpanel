@@ -453,6 +453,8 @@ export interface FleetJoinRequest {
 
 export interface UpdateStatus {
 	current_version: string;
+	image_version?: string;
+	running_image_tag?: string | null;
 	latest_version: string | null;
 	latest_url?: string | null;
 	update_available: boolean;

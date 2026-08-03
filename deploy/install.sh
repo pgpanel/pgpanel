@@ -12,7 +12,7 @@
 #   sudo bash deploy/install.sh --non-interactive   # uses installer.conf defaults
 #   sudo bash deploy/install.sh --mode update|repair|security|uninstall
 #
-# shellcheck: shellcheck -x deploy/install.sh
+# Check with: shellcheck -x deploy/install.sh
 # =============================================================================
 set -Eeuo pipefail
 
@@ -28,7 +28,10 @@ readonly PGPANEL_ETC_DIR="/etc/pgpanel"
 readonly PGPANEL_CONF="${PGPANEL_ETC_DIR}/installer.conf"
 readonly PGPANEL_ANSWERS_FILE="${PGPANEL_ETC_DIR}/install-answers.env"
 readonly PGPANEL_PROGRESS_FILE="${PGPANEL_ETC_DIR}/install-progress.env"
+readonly PGPANEL_CLOUDFLARE_ENV="${PGPANEL_ETC_DIR}/cloudflare-tunnel.env"
 readonly PGPANEL_CLI_PATH="/usr/local/bin/pgpanel"
+readonly DATABASUS_IMAGE="databasus/databasus:v3.51.0"
+readonly CLOUDFLARE_TUNNEL_IMAGE="cloudflare/cloudflared:2026.7.3"
 readonly MIN_CPU=2
 readonly MIN_RAM_MB=4096
 readonly MIN_DISK_GB=30
@@ -76,6 +79,7 @@ SSH_PORT=22
 CONFIGURE_UFW=1
 BEHIND_CLOUDFLARE=0
 USE_CLOUDFLARE_TUNNEL=0
+CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
 ADMIN_USERNAME="admin"
 ADMIN_EMAIL="admin@example.com"
 ADMIN_PASSWORD=""
@@ -95,8 +99,6 @@ PG_CLUSTER_PREFIX="pgpanel_pg_"
 PG_AUTO_RESTART=1
 DOCKER_REGISTRY=""
 ENABLE_DATABASUS=1
-DATABASUS_ADMIN_EMAIL=""
-DATABASUS_ADMIN_PASSWORD=""
 BACKUP_STORAGE_TYPE="later"
 S3_ENDPOINT=""
 S3_REGION=""
@@ -268,7 +270,8 @@ clear_install_progress() {
   rm -f "$PGPANEL_PROGRESS_FILE"
 }
 
-# Save all non-transient installer answers (incl. passwords) with 0600
+# Save installer answers (incl. legacy passwords) with 0600.
+# Cloudflare Tunnel token is intentionally stored separately.
 save_install_answers() {
   mkdir -p "$PGPANEL_ETC_DIR"
   umask 077
@@ -315,8 +318,6 @@ PG_MAX_CLUSTERS=${PG_MAX_CLUSTERS}
 PG_CLUSTER_PREFIX=${PG_CLUSTER_PREFIX}
 PG_AUTO_RESTART=${PG_AUTO_RESTART}
 ENABLE_DATABASUS=${ENABLE_DATABASUS}
-DATABASUS_ADMIN_EMAIL=${DATABASUS_ADMIN_EMAIL}
-DATABASUS_ADMIN_PASSWORD=${DATABASUS_ADMIN_PASSWORD}
 BACKUP_STORAGE_TYPE=${BACKUP_STORAGE_TYPE}
 S3_ENDPOINT=${S3_ENDPOINT}
 S3_REGION=${S3_REGION}
@@ -366,6 +367,7 @@ load_install_answers() {
   # shellcheck disable=SC1090
   source "$PGPANEL_ANSWERS_FILE"
   set +a
+  load_cloudflare_tunnel_token
   REPO_URL="$PGPANEL_OFFICIAL_REPO"
   log_info "Loaded saved answers from ${PGPANEL_ANSWERS_FILE}"
   return 0
@@ -578,6 +580,63 @@ write_secure_file() {
   chown root:root "$path" 2>/dev/null || true
 }
 
+is_valid_hostname() {
+  local host="${1:-}"
+  [[ -n "$host" ]] || return 1
+  [[ "$host" != *://* ]] || return 1
+  [[ "$host" != *..* ]] || return 1
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+
+is_valid_tunnel_token() {
+  local token="${1:-}"
+  [[ -n "$token" ]] || return 1
+  [[ ${#token} -ge 32 ]] || return 1
+  [[ "$token" != *[[:space:]]* ]]
+}
+
+load_cloudflare_tunnel_token() {
+  local inherited_token="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+  CLOUDFLARE_TUNNEL_TOKEN=""
+  if [[ ! -f "$PGPANEL_CLOUDFLARE_ENV" ]]; then
+    CLOUDFLARE_TUNNEL_TOKEN="$inherited_token"
+    return 0
+  fi
+
+  chmod 0600 "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || true
+  chown root:root "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || true
+  CLOUDFLARE_TUNNEL_TOKEN="$(
+    awk -F= '$1 == "TUNNEL_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' \
+      "$PGPANEL_CLOUDFLARE_ENV"
+  )"
+}
+
+save_cloudflare_tunnel_token() {
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -ne 1 ]]; then
+    rm -f "$PGPANEL_CLOUDFLARE_ENV"
+    CLOUDFLARE_TUNNEL_TOKEN=""
+    return 0
+  fi
+
+  is_valid_tunnel_token "$CLOUDFLARE_TUNNEL_TOKEN" || \
+    die "Invalid Cloudflare Tunnel token. Copy the complete token from the Cloudflare dashboard."
+  write_secure_file "$PGPANEL_CLOUDFLARE_ENV" \
+    "TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}" 0600
+  log_ok "Cloudflare Tunnel token saved securely (${PGPANEL_CLOUDFLARE_ENV})"
+}
+
+ensure_cloudflare_tunnel_token() {
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -ne 1 ]]; then
+    save_cloudflare_tunnel_token
+    return 0
+  fi
+
+  load_cloudflare_tunnel_token
+  is_valid_tunnel_token "$CLOUDFLARE_TUNNEL_TOKEN" || \
+    die "Cloudflare Tunnel is enabled, but ${PGPANEL_CLOUDFLARE_ENV} has no valid token. Run 'sudo pgpanel configure'."
+  save_cloudflare_tunnel_token
+}
+
 append_log_section() {
   local title="$1"
   {
@@ -664,7 +723,7 @@ is_primary_supported() {
   case "${OS_ID}:${OS_VERSION_ID}" in
     ubuntu:22.04|ubuntu:24.04|ubuntu:20.04|debian:12*|debian:11*|debian:13*) return 0 ;;
     rocky:8*|rocky:9*|almalinux:8*|almalinux:9*|rhel:8*|rhel:9*|fedora:*|amzn:2023) return 0 ;;
-    opensuse-leap:15*|arch|manjaro) return 0 ;;
+    opensuse-leap:15*|arch:*|manjaro:*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -910,6 +969,7 @@ install_docker() {
         chmod a+r /etc/apt/keyrings/docker.asc
       fi
       local codename
+      # shellcheck disable=SC1091
       codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-stable}")"
       # Mint uses ubuntu codename via UBUNTU_CODENAME
       if [[ -n "${UBUNTU_CODENAME:-}" ]]; then codename="$UBUNTU_CODENAME"; fi
@@ -1227,6 +1287,8 @@ generate_or_load_secrets() {
     upsert_env_key "$env_file" "PGPANEL_VERSION" "$PGPANEL_VERSION"
     upsert_env_key "$env_file" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
     upsert_env_key "$env_file" "PGPANEL_HOST_DATA" "$DATA_DIR"
+    upsert_env_key "$env_file" "PGPANEL_DOMAIN" "$PANEL_DOMAIN"
+    upsert_env_key "$env_file" "DATABASUS_DOMAIN" "$DATABASUS_DOMAIN"
     # Networking / backup defaults for upgrades
     upsert_env_key "$env_file" "PGPANEL_MANAGEMENT_NETWORK" "pgpanel_database_management"
     upsert_env_key "$env_file" "BACKUP_STORAGE_TYPE" "${BACKUP_STORAGE_TYPE:-local}"
@@ -1276,6 +1338,7 @@ PGPANEL_COOKIE_SECURE=${cookie_secure}
 PGPANEL_SESSION_TTL_HOURS=${SESSION_TTL_HOURS}
 PGPANEL_LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS}
 PGPANEL_DOMAIN=${PANEL_DOMAIN}
+DATABASUS_DOMAIN=${DATABASUS_DOMAIN}
 CADDY_EMAIL=${LETSENCRYPT_EMAIL}
 PGPANEL_UPDATE_CHANNEL=${UPDATE_CHANNEL}
 PGPANEL_VERSION=${PGPANEL_VERSION}
@@ -1288,7 +1351,7 @@ PGPANEL_MANAGEMENT_NETWORK=pgpanel_database_management
 PGPANEL_NETWORK_PREFIX=pgpanel_net_
 PGPANEL_VOLUME_PREFIX=pgpanel_vol_
 
-# ── Native backup engine (Databasus removed) ────────────────────────────────
+# ── Native backup engine plus optional Databasus sidecar ────────────────────
 BACKUP_STORAGE_TYPE=${BACKUP_STORAGE_TYPE:-local}
 BACKUP_ENCRYPT=1
 PGPANEL_BACKUP_DIR=/var/lib/pgpanel/backups
@@ -1394,16 +1457,24 @@ render_compose() {
   local dest="${INSTALL_DIR}/deploy/compose.yml"
   mkdir -p "${INSTALL_DIR}/deploy"
   resolve_panel_image
+  local caddy_ports=""
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -ne 1 ]]; then
+    caddy_ports=$'    ports:\n      - "80:80"\n      - "443:443"'
+  fi
+  local caddy_databasus_dependency=""
+  if [[ "$ENABLE_DATABASUS" -eq 1 ]]; then
+    caddy_databasus_dependency=$'      databasus:\n        condition: service_healthy'
+  fi
 
   cat >"$dest" <<EOF
 # Generated by PgPanel installer ${INSTALLER_VERSION}
-# Native backups inside panel — no Databasus service.
-# SECURITY: Docker socket mounted into panel only. See SECURITY.md.
+# Native backups remain inside panel; Databasus is an optional manual sidecar.
+# SECURITY: Docker socket is mounted into panel only. See SECURITY.md.
 #
 # Networks:
-#   pgpanel_frontend            — Caddy ↔ panel
-#   pgpanel_internal            — stack services
-#   pgpanel_database_management — panel ↔ PG clusters (internal DNS)
+#   pgpanel_frontend            — Caddy/cloudflared ↔ web services
+#   pgpanel_internal            — stack-local services
+#   pgpanel_database_management — panel/Databasus ↔ PG clusters (internal DNS)
 
 name: pgpanel
 
@@ -1428,11 +1499,10 @@ services:
   caddy:
     image: caddy:2.9-alpine
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+${caddy_ports}
     environment:
       PGPANEL_DOMAIN: \${PGPANEL_DOMAIN:-}
+      DATABASUS_DOMAIN: \${DATABASUS_DOMAIN:-}
       CADDY_EMAIL: \${CADDY_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -1442,7 +1512,8 @@ services:
       - pgpanel_frontend
     depends_on:
       panel:
-        condition: service_started
+        condition: service_healthy
+${caddy_databasus_dependency}
     logging:
       driver: json-file
       options:
@@ -1490,10 +1561,10 @@ services:
       - "8080"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     logging:
       driver: json-file
       options:
@@ -1502,6 +1573,71 @@ services:
     security_opt:
       - no-new-privileges:true
 EOF
+
+  if [[ "$ENABLE_DATABASUS" -eq 1 ]]; then
+    cat >>"$dest" <<EOF
+
+  databasus:
+    image: ${DATABASUS_IMAGE}
+    pull_policy: missing
+    restart: unless-stopped
+    environment:
+      IS_DISABLE_ANONYMOUS_TELEMETRY: "true"
+    volumes:
+      - ${DATA_DIR}/databasus:/databasus-data
+    networks:
+      - pgpanel_frontend
+      - pgpanel_database_management
+    expose:
+      - "4005"
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+EOF
+  fi
+
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    cat >>"$dest" <<EOF
+
+  cloudflared:
+    image: ${CLOUDFLARE_TUNNEL_IMAGE}
+    pull_policy: missing
+    restart: unless-stopped
+    env_file:
+      - ${PGPANEL_CLOUDFLARE_ENV}
+    environment:
+      TUNNEL_METRICS: 0.0.0.0:20241
+    command: ["tunnel", "run"]
+    depends_on:
+      caddy:
+        condition: service_started
+    networks:
+      - pgpanel_frontend
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+EOF
+  fi
 
   if [[ "${ENABLE_WATCHTOWER:-0}" -eq 1 ]]; then
     cat >>"$dest" <<'EOF'
@@ -1526,9 +1662,58 @@ render_caddyfile() {
   local dest="${INSTALL_DIR}/deploy/Caddyfile"
   mkdir -p "${INSTALL_DIR}/deploy"
 
-  if [[ "$ENABLE_HTTPS" -eq 1 && "$USE_DOMAIN" -eq 1 && -n "$PANEL_DOMAIN" ]]; then
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
     cat >"$dest" <<EOF
-# Generated by PgPanel installer — panel only (no Databasus public vhost)
+# Generated by PgPanel installer — Cloudflare Tunnel origin.
+# TLS terminates at Cloudflare; Caddy is HTTP-only and has no host port binding.
+:80 {
+	@panel host ${PANEL_DOMAIN}
+	handle @panel {
+		encode zstd gzip
+		header {
+			Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "geolocation=(), microphone=(), camera=()"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+			-Server
+		}
+		request_body {
+			max_size 10MB
+		}
+		reverse_proxy panel:8080
+	}
+EOF
+    if [[ "$ENABLE_DATABASUS" -eq 1 && "$DATABASUS_PUBLIC" -eq 1 ]]; then
+      cat >>"$dest" <<EOF
+	@databasus host ${DATABASUS_DOMAIN}
+	handle @databasus {
+		encode zstd gzip
+		header {
+			Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			-Server
+		}
+		reverse_proxy databasus:4005
+	}
+EOF
+    fi
+    cat >>"$dest" <<'EOF'
+	handle {
+		respond "Not found" 404
+	}
+	log {
+		output stdout
+		format console
+	}
+}
+EOF
+  elif [[ "$ENABLE_HTTPS" -eq 1 && "$USE_DOMAIN" -eq 1 && -n "$PANEL_DOMAIN" ]]; then
+    cat >"$dest" <<EOF
+# Generated by PgPanel installer — direct HTTPS mode.
 {
 	email ${LETSENCRYPT_EMAIL}
 }
@@ -1558,6 +1743,26 @@ ${PANEL_DOMAIN} {
 	}
 }
 EOF
+    if [[ "$ENABLE_DATABASUS" -eq 1 && "$DATABASUS_PUBLIC" -eq 1 ]]; then
+      cat >>"$dest" <<EOF
+
+${DATABASUS_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	reverse_proxy databasus:4005
+	log {
+		output stdout
+		format console
+	}
+}
+EOF
+    fi
   else
     log_warn "HTTP-only Caddy config (no domain / HTTPS disabled)"
     cat >"$dest" <<'EOF'
@@ -1576,6 +1781,24 @@ EOF
 	}
 }
 EOF
+    if [[ "$ENABLE_DATABASUS" -eq 1 && "$DATABASUS_PUBLIC" -eq 1 ]]; then
+      cat >>"$dest" <<EOF
+
+${DATABASUS_DOMAIN} {
+	encode gzip
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	reverse_proxy databasus:4005
+	log {
+		output stdout
+	}
+}
+EOF
+    fi
   fi
   log_ok "Caddyfile rendered → ${dest}"
 }
@@ -1633,8 +1856,18 @@ configure_firewall() {
 
 ${C_BOLD}Planned UFW rules:${C_RESET}
   allow ${SSH_PORT}/tcp   (SSH — FIRST)
+EOF
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    cat <<'EOF'
+  no inbound 80/443 rule (Cloudflare Tunnel is outbound-only)
+EOF
+  else
+    cat <<'EOF'
   allow 80/tcp
   allow 443/tcp
+EOF
+  fi
+  cat <<'EOF'
   deny 5432/tcp from any (PostgreSQL not globally open)
 EOF
   if [[ -n "$ADMIN_IP_ALLOWLIST" ]]; then
@@ -1648,10 +1881,12 @@ EOF
 
   # Never lock out SSH
   ufw allow "${SSH_PORT}/tcp" comment 'PgPanel SSH' || true
-  ufw allow 80/tcp comment 'PgPanel HTTP' || true
-  ufw allow 443/tcp comment 'PgPanel HTTPS' || true
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -ne 1 ]]; then
+    ufw allow 80/tcp comment 'PgPanel HTTP' || true
+    ufw allow 443/tcp comment 'PgPanel HTTPS' || true
+  fi
 
-  if [[ -n "$ADMIN_IP_ALLOWLIST" ]]; then
+  if [[ -n "$ADMIN_IP_ALLOWLIST" && "$USE_CLOUDFLARE_TUNNEL" -ne 1 ]]; then
     local ip
     IFS=',' read -ra _ips <<<"$ADMIN_IP_ALLOWLIST"
     for ip in "${_ips[@]}"; do
@@ -1759,6 +1994,7 @@ Then on the VPS:
 build_and_start() {
   INSTALL_PHASE="start"
   resolve_panel_image
+  ensure_cloudflare_tunnel_token
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_HOST_DATA" "$DATA_DIR"
@@ -1770,9 +2006,13 @@ build_and_start() {
   render_compose
 
   ensure_panel_image
+  local pull_services=(caddy)
+  [[ "$ENABLE_DATABASUS" -eq 1 ]] && pull_services+=(databasus)
+  [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]] && pull_services+=(cloudflared)
 
   (
     cd "${INSTALL_DIR}/deploy"
+    # shellcheck disable=SC2030
     export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
     set -a
     # shellcheck source=/dev/null
@@ -1783,12 +2023,12 @@ build_and_start() {
     docker compose -f compose.yml down --remove-orphans 2>/dev/null || true
     prepare_compose_networks
 
-    log_info "Pulling Caddy…"
-    docker compose -f compose.yml pull caddy \
-      || die "Failed to pull Caddy image (check network)"
+    log_info "Pulling runtime images: ${pull_services[*]}"
+    docker compose -f compose.yml pull "${pull_services[@]}" \
+      || die "Failed to pull one or more runtime images (check network)"
 
     # Never use -v: data volumes must survive restarts/updates
-    # Both images are now known to be local.  Do not let Compose make a second
+    # All images are now known to be local. Do not let Compose make a second
     # GHCR request, which would turn a transient registry timeout into a failed
     # install or resume.
     if ! PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build; then
@@ -1804,13 +2044,31 @@ build_and_start() {
 }
 
 # ── Health checks ────────────────────────────────────────────────────────────
+wait_for_container_health() {
+  local service="$1" attempts="${2:-60}" cid="" state="" i
+  for i in $(seq 1 "$attempts"); do
+    cid="$(docker ps -q --filter "label=com.docker.compose.service=${service}" | awk 'NR == 1 { print; exit }')"
+    if [[ -n "$cid" ]]; then
+      state="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
+      if [[ "$state" == "healthy" ]]; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 health_check() {
   INSTALL_PHASE="health"
   local failed=0
   sleep 5
 
+  local services=(caddy panel)
+  [[ "$ENABLE_DATABASUS" -eq 1 ]] && services+=(databasus)
+  [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]] && services+=(cloudflared)
   local svc
-  for svc in caddy panel; do
+  for svc in "${services[@]}"; do
     if docker compose -f "${INSTALL_DIR}/deploy/compose.yml" ps --status running 2>/dev/null | grep -qi "$svc"; then
       log_ok "Container running: $svc"
     else
@@ -1822,6 +2080,32 @@ health_check() {
       fi
     fi
   done
+
+  if [[ "$ENABLE_DATABASUS" -eq 1 ]]; then
+    if wait_for_container_health databasus 45; then
+      log_ok "Databasus container healthy"
+    else
+      log_error "Databasus did not become healthy"
+      failed=1
+    fi
+  fi
+
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    if wait_for_container_health cloudflared 60; then
+      log_ok "Cloudflare Tunnel connected and ready"
+    else
+      log_error "Cloudflare Tunnel did not become ready — check token and outbound 7844/443"
+      failed=1
+    fi
+    local caddy_cid
+    caddy_cid="$(docker ps -q --filter 'label=com.docker.compose.service=caddy' | awk 'NR == 1 { print; exit }')"
+    if [[ -n "$caddy_cid" ]] && docker port "$caddy_cid" 2>/dev/null | grep -q .; then
+      log_error "Tunnel mode unexpectedly exposes a Caddy host port"
+      failed=1
+    else
+      log_ok "Tunnel mode has no direct Caddy host port"
+    fi
+  fi
 
   local i ok=0
   for i in $(seq 1 40); do
@@ -1855,6 +2139,16 @@ health_check() {
     log_warn "Panel /ready not OK yet (Docker may still be warming)"
   fi
 
+  if [[ "$ENABLE_DATABASUS" -eq 1 ]]; then
+    if docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
+      -fsS http://databasus:4005/api/v1/system/health >/dev/null 2>&1; then
+      log_ok "Databasus system health OK"
+    else
+      log_error "Databasus system health failed"
+      failed=1
+    fi
+  fi
+
   if [[ -f "${INSTALL_DIR}/.env" ]]; then
     local mode
     mode="$(stat -c '%a' "${INSTALL_DIR}/.env" 2>/dev/null || stat -f '%OLp' "${INSTALL_DIR}/.env" 2>/dev/null || echo '?')"
@@ -1866,7 +2160,9 @@ health_check() {
     fi
   fi
 
-  if [[ "$ENABLE_HTTPS" -eq 1 && "$USE_DOMAIN" -eq 1 ]]; then
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    log_info "Public HTTPS check deferred until Cloudflare Dashboard hostnames point to http://caddy:80"
+  elif [[ "$ENABLE_HTTPS" -eq 1 && "$USE_DOMAIN" -eq 1 ]]; then
     if timeout_cmd 20 curl -fsSI "https://${PANEL_DOMAIN}/health" >/dev/null 2>&1; then
       log_ok "HTTPS ${PANEL_DOMAIN} reachable"
     else
@@ -2025,10 +2321,17 @@ write_install_summary() {
     echo "Install dir: ${INSTALL_DIR}"
     echo "Data dir: ${DATA_DIR}"
     echo "Panel domain: ${PANEL_DOMAIN}"
-    if [[ "$DATABASUS_PUBLIC" -eq 1 ]]; then
+    if [[ "$ENABLE_DATABASUS" -ne 1 ]]; then
+      echo "Databasus: disabled"
+    elif [[ "$DATABASUS_PUBLIC" -eq 1 ]]; then
       echo "Databasus domain: ${DATABASUS_DOMAIN} (public)"
     else
-      echo "Databasus: internal only (http://databasus:8000)"
+      echo "Databasus: internal only (http://databasus:4005)"
+    fi
+    echo "Databasus enabled: ${ENABLE_DATABASUS}"
+    echo "Cloudflare Tunnel enabled: ${USE_CLOUDFLARE_TUNNEL}"
+    if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+      echo "Cloudflare token file: ${PGPANEL_CLOUDFLARE_ENV} (0600)"
     fi
     echo "PostgreSQL public ports default: ${PUBLIC_PG_PORTS}"
     echo "HTTPS: ${ENABLE_HTTPS}"
@@ -2052,20 +2355,28 @@ write_install_summary() {
 print_final_message() {
   log_step 15 15 "Telepítés befejezése"
   INSTALL_PHASE="done"
-  local panel_url
+  local panel_url databasus_url backup_label
   if [[ "$ENABLE_HTTPS" -eq 1 && "$USE_DOMAIN" -eq 1 ]]; then
     panel_url="https://${PANEL_DOMAIN}"
   else
     panel_url="http://$(public_ip)"
   fi
+  if [[ "$ENABLE_DATABASUS" -eq 1 && "$DATABASUS_PUBLIC" -eq 1 ]]; then
+    databasus_url="https://${DATABASUS_DOMAIN}"
+  else
+    databasus_url="http://databasus:4005 (internal Docker network)"
+  fi
+  backup_label="native engine (${BACKUP_STORAGE_TYPE:-local})"
+  [[ "$ENABLE_DATABASUS" -eq 1 ]] && backup_label+=" + Databasus sidecar"
 
   cat <<EOF
 
 ${C_GREEN}${C_BOLD}PgPanel telepítés kész.${C_RESET}
 
 ${C_BOLD}Panel:${C_RESET}   ${panel_url}
+${C_BOLD}Databasus:${C_RESET} ${databasus_url}
 ${C_BOLD}Admin:${C_RESET}   Első admin létrehozása a webes setup oldalon (e-mail + jelszó)
-${C_BOLD}Backup:${C_RESET}  native engine (${BACKUP_STORAGE_TYPE:-local})
+${C_BOLD}Backup:${C_RESET}  ${backup_label}
 
 ${C_BOLD}Konfiguráció:${C_RESET}
   ${INSTALL_DIR}/.env
@@ -2084,12 +2395,27 @@ ${C_BOLD}Hasznos parancsok:${C_RESET}
 
 ${C_YELLOW}FIGYELEM:${C_RESET}
   • Első belépés után a setup wizard végigvezet az első clusteren.
+  • Databasus első adminja és backup jobjai a Databasus UI-ban állíthatók be.
   • Production-ready csak sikeres backup + verify után.
   • Docker socket a panel konténerben = kiemelt host kockázat (SECURITY.md).
   • PostgreSQL clusterek: pgpanel_database_management hálózat (privát DNS).
-  • Backup: beépített native engine (pg_dump), nem Databasus.
+  • A Databasushoz a klasztereket kézzel add hozzá: pgpanel_pg_<slug>:5432.
 
 EOF
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    cat <<EOF
+${C_BOLD}Cloudflare Dashboard route-ok:${C_RESET}
+  ${PANEL_DOMAIN}    → http://caddy:80
+  Token file: ${PGPANEL_CLOUDFLARE_ENV} (0600)
+
+EOF
+    if [[ "$ENABLE_DATABASUS" -eq 1 && "$DATABASUS_PUBLIC" -eq 1 ]]; then
+      cat <<EOF
+  ${DATABASUS_DOMAIN} → http://caddy:80
+
+EOF
+    fi
+  fi
   PRODUCTION_READY=0
   # update conf flag
   if [[ -f "$PGPANEL_CONF" ]]; then
@@ -2128,13 +2454,69 @@ prompt_base_settings() {
   log_info "Panel image: ${PGPANEL_IMAGE}"
 }
 
+prompt_cloudflare_tunnel() {
+  echo ""
+  echo "${C_BOLD}=== Cloudflare Tunnel ===${C_RESET}"
+  echo "A Tunnel token-alapú connector. A publikus hostname route-okat a Cloudflare Dashboardban kell beállítani."
+  load_cloudflare_tunnel_token
+  local tunnel_default="n"
+  [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]] && tunnel_default="y"
+  prompt_yesno USE_CLOUDFLARE_TUNNEL "Cloudflare Tunnel használata?" "$tunnel_default"
+
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    [[ "$USE_DOMAIN" -eq 1 && -n "$PANEL_DOMAIN" ]] || \
+      die "Cloudflare Tunnelhez panel domain szükséges."
+    BEHIND_CLOUDFLARE=1
+    ENABLE_HTTPS=1
+    if [[ -z "$CLOUDFLARE_TUNNEL_TOKEN" ]]; then
+      prompt_secret CLOUDFLARE_TUNNEL_TOKEN "Cloudflare Tunnel token"
+    fi
+    is_valid_tunnel_token "$CLOUDFLARE_TUNNEL_TOKEN" || \
+      die "Érvénytelen Cloudflare Tunnel token."
+    save_cloudflare_tunnel_token
+    log_info "Cloudflare origin route: http://caddy:80"
+  else
+    BEHIND_CLOUDFLARE=0
+    save_cloudflare_tunnel_token
+  fi
+}
+
+prompt_databasus_exposure() {
+  [[ "$ENABLE_DATABASUS" -eq 1 ]] || {
+    DATABASUS_PUBLIC=0
+    DATABASUS_DOMAIN=""
+    return 0
+  }
+
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    DATABASUS_PUBLIC=1
+    local default_domain="${DATABASUS_DOMAIN:-backup.${PANEL_DOMAIN}}"
+    prompt_val DATABASUS_DOMAIN "Databasus domain" "$default_domain"
+  else
+    prompt_yesno DATABASUS_PUBLIC "Databasus publikus hostname-en legyen elérhető?" "n"
+    if [[ "$DATABASUS_PUBLIC" -eq 1 ]]; then
+      prompt_val DATABASUS_DOMAIN "Databasus domain" "${DATABASUS_DOMAIN:-}"
+    else
+      DATABASUS_DOMAIN=""
+    fi
+  fi
+
+  if [[ "$DATABASUS_PUBLIC" -eq 1 ]]; then
+    is_valid_hostname "$DATABASUS_DOMAIN" || \
+      die "Invalid Databasus domain: ${DATABASUS_DOMAIN}"
+    [[ "$DATABASUS_DOMAIN" != "$PANEL_DOMAIN" ]] || \
+      die "A Databasus domain nem lehet azonos a panel domainnel."
+  fi
+}
+
 prompt_network() {
   echo ""
   echo "${C_BOLD}=== Domain ===${C_RESET}"
-  echo "${C_DIM}Csak a panel domain kell. PostgreSQL és backup nem publikus domainen fut.${C_RESET}"
+  echo "${C_DIM}A PostgreSQL nem kap publikus portot. A Databasus csak külön hostname-en vagy belső hálózaton érhető el.${C_RESET}"
   prompt_yesno USE_DOMAIN "Használsz domaint a panelhez?" "y"
   if [[ "$USE_DOMAIN" -eq 1 ]]; then
     prompt_val PANEL_DOMAIN "Panel domain" "$PANEL_DOMAIN"
+    is_valid_hostname "$PANEL_DOMAIN" || die "Invalid panel domain: ${PANEL_DOMAIN}"
     prompt_val LETSENCRYPT_EMAIL "Let's Encrypt / admin e-mail" "${LETSENCRYPT_EMAIL:-$ADMIN_EMAIL}"
     prompt_yesno ENABLE_HTTPS "HTTPS (Let's Encrypt)?" "y"
     if check_dns "$PANEL_DOMAIN"; then
@@ -2153,21 +2535,19 @@ prompt_network() {
       die "Aborted"
     fi
   fi
-  DATABASUS_PUBLIC=0
-  DATABASUS_DOMAIN=""
   PUBLIC_PG_PORTS=0
-  prompt_yesno CONFIGURE_UFW "UFW tűzfal (SSH + 80/443)?" "y"
+  prompt_cloudflare_tunnel
+  prompt_yesno CONFIGURE_UFW "UFW tűzfal (SSH + szükséges edge szabályok)?" "y"
   prompt_val SSH_PORT "SSH port" "22"
 }
 
-# Fresh installs intentionally ask only for the public panel identity. All
-# operational settings (storage, retention, notifications, PostgreSQL
-# defaults, firewall details) are managed after login in the web UI or via
-# `pgpanel configure`.
+# Fresh installs ask for the public panel identity and the edge services that
+# must be reachable immediately. Storage, retention, notifications and
+# PostgreSQL defaults remain configurable after login.
 prompt_minimal_install_identity() {
   echo ""
   echo "${C_BOLD}=== PgPanel alap telepítés ===${C_RESET}"
-  echo "A telepítő csak a panel domaint és a tanúsítványhoz tartozó e-mail címet kéri."
+  echo "A telepítő a panel, a Databasus és a Cloudflare Tunnel alap elérését készíti elő."
   local domain_default="$PANEL_DOMAIN"
   local email_default="$LETSENCRYPT_EMAIL"
   [[ "$domain_default" == "db.example.com" ]] && domain_default=""
@@ -2175,7 +2555,7 @@ prompt_minimal_install_identity() {
   prompt_val PANEL_DOMAIN "Panel domain" "$domain_default"
   prompt_val LETSENCRYPT_EMAIL "E-mail cím" "$email_default"
 
-  if [[ ! "$PANEL_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+  if ! is_valid_hostname "$PANEL_DOMAIN"; then
     die "Invalid panel domain: ${PANEL_DOMAIN}"
   fi
   if [[ ! "$LETSENCRYPT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
@@ -2186,11 +2566,12 @@ prompt_minimal_install_identity() {
   ENABLE_HTTPS=1
   CONFIGURE_UFW=1
   PUBLIC_PG_PORTS=0
-  DATABASUS_PUBLIC=0
-  DATABASUS_DOMAIN=""
+  ENABLE_DATABASUS=1
+  USE_CLOUDFLARE_TUNNEL=1
+  prompt_cloudflare_tunnel
+  prompt_databasus_exposure
   BACKUP_STORAGE_TYPE="local"
   NOTIFY_TYPE="none"
-  ENABLE_DATABASUS=0
   CREATE_SWAP=0
   ENABLE_WATCHTOWER=0
 }
@@ -2289,16 +2670,12 @@ prompt_databasus() {
   echo "${C_BOLD}=== Databasus ===${C_RESET}"
   prompt_yesno ENABLE_DATABASUS "Databasus engedélyezése?" "y"
   if [[ "$ENABLE_DATABASUS" -ne 1 ]]; then
+    DATABASUS_PUBLIC=0
+    DATABASUS_DOMAIN=""
     return 0
   fi
-  prompt_val DATABASUS_ADMIN_EMAIL "Databasus admin e-mail" "${ADMIN_EMAIL}"
-  echo "Databasus jelszó: 1) auto  2) kézi"
-  local p
-  read_user "Választás [1]: " || die "Input closed"; p="${REPLY}"
-  if [[ "${p:-1}" == "2" ]]; then
-    prompt_secret DATABASUS_ADMIN_PASSWORD "Databasus admin jelszó"
-  fi
-  prompt_backup_storage
+  prompt_databasus_exposure
+  log_info "Databasus admin és backup jobok a Databasus webes setupjában konfigurálhatók."
 }
 
 prompt_notifications() {
@@ -2339,7 +2716,9 @@ show_summary_and_confirm() {
 ${C_BOLD}Telepítési összegzés${C_RESET}
 
   Panel domain:        ${PANEL_DOMAIN:-"(HTTP-only / no domain)"}
-  Backup:              native (${BACKUP_STORAGE_TYPE:-local})
+  Backup:              native (${BACKUP_STORAGE_TYPE:-local}) + Databasus sidecar
+  Databasus:            $([[ "$ENABLE_DATABASUS" -eq 1 ]] && echo enabled || echo disabled)
+  Cloudflare Tunnel:    $([[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]] && echo enabled || echo disabled)
   PostgreSQL:          private Docker network only
   Telepítési könyvtár: ${INSTALL_DIR}
   Adatkönyvtár:        ${DATA_DIR}
@@ -2390,6 +2769,7 @@ run_install_pipeline() {
   run_step directories 4 "$total" "Könyvtárak létrehozása" create_directories
   run_step repository 5 "$total" "Hivatalos repository szinkronizálása" clone_or_update_repo
   run_step secrets 6 "$total" "Titkok generálása / betöltése" generate_or_load_secrets
+  ensure_cloudflare_tunnel_token
   run_step config 7 "$total" "Konfiguráció mentése" save_installer_conf
   run_step tuning 8 "$total" "Rendszer beállítások" configure_system_tuning
   run_step networks 9 "$total" "Docker hálózatok előkészítése" ensure_docker_networks
@@ -2516,10 +2896,14 @@ send_test_notification() {
   case "$NOTIFY_TYPE" in
     webhook|discord|slack|telegram)
       [[ -z "$WEBHOOK_URL" ]] && return 0
-      timeout_cmd 15 curl -fsS -X POST "$WEBHOOK_URL" \
+      if timeout_cmd 15 curl -fsS -X POST "$WEBHOOK_URL" \
         -H "Content-Type: application/json" \
         -d '{"content":"PgPanel installer: test notification","text":"PgPanel installer: test notification"}' \
-        >/dev/null 2>&1 && log_ok "Test webhook sent" || log_warn "Test webhook failed"
+        >/dev/null 2>&1; then
+        log_ok "Test webhook sent"
+      else
+        log_warn "Test webhook failed"
+      fi
       ;;
     smtp)
       log_info "SMTP test: configure application-level mailer; installer does not embed raw passwords in sendmail"
@@ -2536,6 +2920,7 @@ recreate_panel_near_zero() {
   local rc=0
   (
     cd "${INSTALL_DIR}/deploy"
+    # shellcheck disable=SC2031
     export PGPANEL_IMAGE="$image" PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
     set -a
     # shellcheck source=/dev/null
@@ -2579,6 +2964,7 @@ recreate_panel_near_zero() {
 do_update() {
   load_installer_conf
   REPO_URL="$PGPANEL_OFFICIAL_REPO"
+  ensure_cloudflare_tunnel_token
   LOG_FILE="${LOG_DIR}/installer.log"
   mkdir -p "$LOG_DIR"
 
@@ -2631,6 +3017,10 @@ do_update() {
   mkdir -p "$backup_dir"
   cp -a "${INSTALL_DIR}/.env" "$backup_dir/" 2>/dev/null || true
   cp -a "$PGPANEL_CONF" "$backup_dir/" 2>/dev/null || true
+  if [[ -f "$PGPANEL_CLOUDFLARE_ENV" ]]; then
+    cp -a "$PGPANEL_CLOUDFLARE_ENV" "$backup_dir/cloudflare-tunnel.env" 2>/dev/null || true
+    chmod 0600 "$backup_dir/cloudflare-tunnel.env" 2>/dev/null || true
+  fi
   if [[ -f "${DATA_DIR}/panel/panel.db" ]]; then
     cp -a "${DATA_DIR}/panel/panel.db" "$backup_dir/panel.db" || true
   fi
@@ -2646,14 +3036,15 @@ do_update() {
       die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
     fi
     generate_or_load_secrets
+    ensure_cloudflare_tunnel_token
     render_caddyfile
     render_compose
     save_installer_conf
     install_cli
   else
-    # Pin version without git — app is entirely in the image.
+    # Image-only: do not rewrite VERSION/.env version pins until cutover succeeds
+    # (otherwise the panel thinks it is already on remote while still running old image).
     mkdir -p "$INSTALL_DIR"
-    printf '%s\n' "$remote_v" >"${INSTALL_DIR}/VERSION"
     if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
       die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
     fi
@@ -2667,8 +3058,8 @@ do_update() {
   printf '%s\n' "$local_v" >"${backup_dir}/previous-version.txt"
   printf '%s\n' "$remote_v" >"${backup_dir}/target-version.txt"
 
+  # Pin image for pull/recreate only — version string after healthy cutover.
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
-  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
 
   # Pull while the old panel is still serving (no downtime yet).
@@ -2678,6 +3069,10 @@ do_update() {
     log_error "Update health check failed — rollback available from ${backup_dir}"
     if confirm "Restore previous .env and recreate previous image?" "Y"; then
       cp -a "${backup_dir}/.env" "${INSTALL_DIR}/.env" 2>/dev/null || true
+      if [[ -f "${backup_dir}/cloudflare-tunnel.env" ]]; then
+        cp -a "${backup_dir}/cloudflare-tunnel.env" "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || true
+        chmod 0600 "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || true
+      fi
       (
         cd "${INSTALL_DIR}/deploy"
         set -a
@@ -2690,6 +3085,22 @@ do_update() {
     fi
     return 1
   fi
+
+  if [[ "$update_host" -eq 1 ]]; then
+    local host_pull_services=(caddy)
+    [[ "$ENABLE_DATABASUS" -eq 1 ]] && host_pull_services+=(databasus)
+    [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]] && host_pull_services+=(cloudflared)
+    (
+      cd "${INSTALL_DIR}/deploy"
+      docker compose pull "${host_pull_services[@]}"
+      docker compose up -d --remove-orphans --no-build
+    ) || die "Host service update failed after panel cutover"
+  fi
+
+  # Cutover healthy — now record version pins.
+  printf '%s\n' "$remote_v" >"${INSTALL_DIR}/VERSION"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$remote_v"
+  PGPANEL_VERSION="$remote_v"
 
   local mode_label="image-only (no git)"
   [[ "$update_host" -eq 1 ]] && mode_label="host+image (git)"
@@ -2707,6 +3118,7 @@ ${C_GREEN}${C_BOLD}Update completed without data loss.${C_RESET}
 
 Preserved:
   • ${INSTALL_DIR}/.env secrets
+  • Cloudflare Tunnel token (when enabled)
   • panel SQLite (${DATA_DIR}/panel)
   • PostgreSQL Docker volumes
 
@@ -2746,15 +3158,13 @@ do_repair() {
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_MANAGEMENT_NETWORK" "pgpanel_database_management"
   upsert_env_key "${INSTALL_DIR}/.env" "BACKUP_STORAGE_TYPE" "${BACKUP_STORAGE_TYPE:-local}"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_BACKUP_DIR" "/var/lib/pgpanel/backups"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_DOMAIN" "${PANEL_DOMAIN:-}"
+  upsert_env_key "${INSTALL_DIR}/.env" "DATABASUS_DOMAIN" "${DATABASUS_DOMAIN:-}"
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
-  # Remove orphaned Databasus service if present from older installs
-  (
-    cd "${INSTALL_DIR}/deploy" 2>/dev/null || exit 0
-    docker compose stop databasus 2>/dev/null || true
-    docker compose rm -f databasus 2>/dev/null || true
-  ) || true
 
-  # Always re-render so network topology (management net, private Databasus) is correct
+  # Always re-render so the sidecar, tunnel and management network topology
+  # match the saved configuration.
+  ensure_cloudflare_tunnel_token
   render_caddyfile
   render_compose
 
@@ -2799,17 +3209,23 @@ do_configure() {
   log_info "Configure mode — change selected settings"
   prompt_network
   prompt_notifications
-  if confirm "Update Databasus/backup settings?" "N"; then
+  if confirm "Update native backup settings?" "N"; then
+    prompt_backup_storage
+  fi
+  if confirm "Update Databasus sidecar exposure?" "N"; then
     prompt_databasus
   fi
+  ensure_cloudflare_tunnel_token
   save_installer_conf
   upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_DOMAIN" "${PANEL_DOMAIN:-}"
+  upsert_env_key "${INSTALL_DIR}/.env" "DATABASUS_DOMAIN" "${DATABASUS_DOMAIN:-}"
   # Refresh env non-secret fields carefully without wiping keys
   render_caddyfile
   render_compose
   (
     cd "${INSTALL_DIR}/deploy"
-    docker compose up -d
+    docker compose up -d --remove-orphans
   )
   log_ok "Configuration updated"
 }
@@ -2855,6 +3271,26 @@ do_security_check() {
   [[ "${ENABLE_HTTPS:-0}" -eq 1 && "${USE_DOMAIN:-0}" -eq 1 ]] && https_ok=1
   check_issue "$https_ok" "HTTPS + domain enabled" 15
 
+  local tunnel_secret_ok=1
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -eq 1 ]]; then
+    load_cloudflare_tunnel_token
+    local tunnel_mode
+    tunnel_mode="$(stat -c '%a' "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || stat -f '%OLp' "$PGPANEL_CLOUDFLARE_ENV" 2>/dev/null || echo '?')"
+    if [[ "$tunnel_mode" != "600" ]] || ! is_valid_tunnel_token "$CLOUDFLARE_TUNNEL_TOKEN"; then
+      tunnel_secret_ok=0
+    fi
+  fi
+  check_issue "$tunnel_secret_ok" "Cloudflare Tunnel token file is protected" 15
+
+  local direct_edge_ok=1 caddy_cid=""
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -eq 1 ]]; then
+    caddy_cid="$(docker ps -q --filter 'label=com.docker.compose.service=caddy' | awk 'NR == 1 { print; exit }')"
+    if [[ -n "$caddy_cid" ]] && docker port "$caddy_cid" 2>/dev/null | grep -q .; then
+      direct_edge_ok=0
+    fi
+  fi
+  check_issue "$direct_edge_ok" "Tunnel mode has no direct Caddy host ports" 10
+
   local pub_pg=1
   [[ "${PUBLIC_PG_PORTS:-0}" -eq 0 ]] && pub_pg=1 || pub_pg=0
   check_issue "$pub_pg" "Public PostgreSQL ports disabled by default" 10
@@ -2864,7 +3300,9 @@ do_security_check() {
   check_issue "$ufw_ok" "UFW active" 5
 
   local sock_db=1
-  if docker inspect "$(docker ps -qf name=databasus | head -1)" 2>/dev/null | grep -q docker.sock; then
+  local databasus_cid=""
+  databasus_cid="$(docker ps -q --filter 'label=com.docker.compose.service=databasus' | awk 'NR == 1 { print; exit }')"
+  if [[ -n "$databasus_cid" ]] && docker inspect "$databasus_cid" 2>/dev/null | grep -q docker.sock; then
     sock_db=0
   fi
   check_issue "$sock_db" "Databasus has no Docker socket" 20
@@ -2909,7 +3347,7 @@ do_security_check() {
   echo "Requires successful backup + restore verification before setting PRODUCTION_READY=1"
 }
 
-# ── Backup integration test (no invented Databasus endpoints) ────────────────
+# ── Backup integration test (manual Databasus workflow) ──────────────────────
 do_backup_test() {
   load_installer_conf
   log_info "Backup integration test"
@@ -2919,12 +3357,26 @@ do_backup_test() {
     return 0
   fi
 
-  # Probe Databasus container
-  if docker ps --format '{{.Names}}' | grep -qi databasus; then
-    log_ok "Databasus container is running"
-  else
+  if ! docker compose -f "${INSTALL_DIR}/deploy/compose.yml" ps --status running databasus 2>/dev/null \
+    | grep -qi databasus; then
     log_error "Databasus container not running"
     return 1
+  fi
+  if docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
+    -fsS http://databasus:4005/api/v1/system/health >/dev/null 2>&1; then
+    log_ok "Databasus system health OK"
+  else
+    log_error "Databasus system health failed"
+    return 1
+  fi
+
+  if [[ "$USE_CLOUDFLARE_TUNNEL" -eq 1 ]]; then
+    if wait_for_container_health cloudflared 30; then
+      log_ok "Cloudflare Tunnel readiness OK"
+    else
+      log_error "Cloudflare Tunnel is not ready"
+      return 1
+    fi
   fi
 
   if [[ "$BACKUP_STORAGE_TYPE" =~ ^(s3|r2|b2|hetzner|minio)$ ]]; then
@@ -2933,20 +3385,15 @@ do_backup_test() {
 
   cat <<'EOF'
 
-Databasus public provisioning API is version-dependent.
-PgPanel uses:
-  • HttpDatabasusAdapter (only after verifying your Databasus version)
-  • ManualDatabasusAdapter → PendingManualSetup
-
 Manual checklist:
-  1. Open Databasus UI (if public) or port-forward internal service
-  2. Add PostgreSQL storage with panel-generated backup role credentials
+  1. Open Databasus UI (public hostname or internal Docker network)
+  2. Add each PostgreSQL cluster using pgpanel_pg_<slug>:5432
   3. Configure retention / WAL / verification in Databasus
   4. Create a test cluster in PgPanel, write data, trigger backup
   5. Verify restore in Databasus before marking production-ready
 
 EOF
-  log_warn "Automatic end-to-end restore verification not asserted (no invented API)"
+  log_warn "Automatic end-to-end restore verification is manual by design."
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
@@ -2965,20 +3412,20 @@ EOF
   case "${c:-5}" in
     1)
       (
-        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down
+        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down --remove-orphans
       ) || true
       log_ok "Containers stopped"
       ;;
     2)
       (
-        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down
+        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down --remove-orphans
       ) || true
-      rm -f "$PGPANEL_CONF" "$PGPANEL_CLI_PATH"
+      rm -f "$PGPANEL_CONF" "$PGPANEL_CLOUDFLARE_ENV" "$PGPANEL_CLI_PATH"
       log_ok "App + conf removed (data dirs kept)"
       ;;
     3)
       (
-        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down -v
+        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down -v --remove-orphans
       ) || true
       # remove non-cluster volumes only
       rm -rf "$INSTALL_DIR" "$PGPANEL_ETC_DIR" "$PGPANEL_CLI_PATH"
@@ -2994,7 +3441,7 @@ EOF
         die "Aborted"
       fi
       (
-        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down -v
+        cd "${INSTALL_DIR}/deploy" 2>/dev/null && docker compose down -v --remove-orphans
       ) || true
       # Remove pgpanel-managed docker volumes
       docker volume ls -q | grep -E '^pgpanel' | while read -r v; do
@@ -3136,6 +3583,9 @@ Never builds on the VPS — only pulls images and configures.
 
 Official repo: ${PGPANEL_OFFICIAL_REPO}
 Panel image:   ${PGPANEL_GHCR_IMAGE}:<version>
+Databasus:     ${DATABASUS_IMAGE}
+cloudflared:   ${CLOUDFLARE_TUNNEL_IMAGE}
+Tunnel token:  ${PGPANEL_CLOUDFLARE_ENV} (0600, when enabled)
 Answers:       ${PGPANEL_ANSWERS_FILE}
 Progress:      ${PGPANEL_PROGRESS_FILE}
 EOF
@@ -3148,6 +3598,7 @@ EOF
 
 # ── Test mode helpers (sourced by bats) ──────────────────────────────────────
 if [[ "${PGPANEL_INSTALLER_LIB_ONLY:-0}" == "1" ]]; then
+  # shellcheck disable=SC2317
   return 0 2>/dev/null || exit 0
 fi
 

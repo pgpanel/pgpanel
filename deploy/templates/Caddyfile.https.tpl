@@ -23,3 +23,20 @@ __PANEL_DOMAIN__ {
 		format console
 	}
 }
+
+# Include this vhost only when __DATABASUS_PUBLIC__=1.
+__DATABASUS_DOMAIN__ {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	reverse_proxy databasus:4005
+	log {
+		output stdout
+		format console
+	}
+}

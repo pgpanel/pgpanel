@@ -73,10 +73,11 @@ wait_panel_healthy() {
 sleep 2
 
 if [ -n "${ENV_FILE:-}" ] && [ -d "$(dirname "$ENV_FILE")" ]; then
+  # Pin image for compose recreate — do NOT bump PGPANEL_VERSION yet
+  # (env version must not claim success before the new image is healthy).
   upsert_env PGPANEL_IMAGE "$PGPANEL_TARGET_IMAGE" "$ENV_FILE" || true
-  upsert_env PGPANEL_VERSION "$PGPANEL_TARGET_VERSION" "$ENV_FILE" || true
   upsert_env PGPANEL_PULL_POLICY missing "$ENV_FILE" || true
-  echo "[pgpanel-updater] updated env pins"
+  echo "[pgpanel-updater] pinned PGPANEL_IMAGE"
 fi
 
 cd "$COMPOSE_DIR"
@@ -85,29 +86,34 @@ set -a
 [ -f "$ENV_FILE" ] && . "$ENV_FILE" || true
 set +a
 export PGPANEL_IMAGE="$PGPANEL_TARGET_IMAGE"
-export PGPANEL_VERSION="$PGPANEL_TARGET_VERSION"
 export PGPANEL_PULL_POLICY=missing
 
 echo "[pgpanel-updater] pulling panel image (old panel still serving)"
 docker pull "$PGPANEL_TARGET_IMAGE" || docker compose pull panel
 
 echo "[pgpanel-updater] near-zero cutover: recreate panel only"
-# Prefer compose --wait (healthy) when available; else recreate + manual health poll.
 if docker compose up -d --no-deps --force-recreate --no-build --wait --wait-timeout 120 panel; then
   echo "[pgpanel-updater] compose --wait succeeded"
-  exit 0
+else
+  echo "[pgpanel-updater] --wait unsupported or failed — force-recreate + health poll"
+  if ! docker compose up -d --no-deps --force-recreate --no-build panel; then
+    echo "[pgpanel-updater] force-recreate failed — retrying plain up"
+    docker compose up -d --no-deps --no-build panel || {
+      echo "[pgpanel-updater] FAILED"
+      exit 1
+    }
+  fi
+  wait_panel_healthy 90
 fi
 
-echo "[pgpanel-updater] --wait unsupported or failed — force-recreate + health poll"
-if ! docker compose up -d --no-deps --force-recreate --no-build panel; then
-  echo "[pgpanel-updater] force-recreate failed — retrying plain up"
-  docker compose up -d --no-deps --no-build panel || {
-    echo "[pgpanel-updater] FAILED"
-    exit 1
-  }
+# Only after healthy: record version pins (avoids "up to date" lie on old image).
+if [ -n "${ENV_FILE:-}" ] && [ -d "$(dirname "$ENV_FILE")" ]; then
+  upsert_env PGPANEL_VERSION "$PGPANEL_TARGET_VERSION" "$ENV_FILE" || true
 fi
-
-wait_panel_healthy 90
+INSTALL_DIR="$(dirname "$COMPOSE_DIR")"
+if [ -d "$INSTALL_DIR" ]; then
+  echo "$PGPANEL_TARGET_VERSION" >"$INSTALL_DIR/VERSION" || true
+fi
 echo "[pgpanel-updater] done"
 "#;
 
@@ -338,6 +344,20 @@ impl DockerClient {
             .unwrap_or("latest");
         self.schedule_detached_panel_upgrade(new_image, version)
             .await
+    }
+
+    /// Image reference of the running compose `panel` service (e.g. ghcr.io/...:0.1.12).
+    pub async fn running_panel_image(&self) -> Result<Option<String>> {
+        let id = self.find_panel_container_id().await?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let inspect = self
+            .docker
+            .inspect_container(&id, None)
+            .await
+            .map_err(|e| Error::Docker(format!("inspect panel: {e}")))?;
+        Ok(inspect.config.and_then(|c| c.image))
     }
 
     async fn find_panel_container_id(&self) -> Result<Option<String>> {

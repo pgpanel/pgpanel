@@ -15,13 +15,14 @@ sudo pgpanel update
 3. Backup: `.env`, `installer.conf`, `panel.db` → `/opt/pgpanel/backups/config/<ts>/`  
 4. Hivatalos git fa frissítése (`https://github.com/pgpanel/pgpanel.git`)  
 5. `PGPANEL_IMAGE` pin frissítése a `VERSION` alapján  
-6. `docker compose pull` + `up -d --remove-orphans`  
+6. `docker compose pull` + `up -d --remove-orphans` (a `--with-host` mód a Caddy/Databasus/Tunnel konfigurációt is frissíti)
 7. Health check  
 
 ### Amit soha nem töröl
 
 - PostgreSQL volume-ok (`pgpanel_vol_*`)  
 - Databasus adatkönyvtár  
+- Cloudflare Tunnel token (`/etc/pgpanel/cloudflare-tunnel.env`)
 - `.env` titkok (kivéve te állítod vissza backupból)  
 - panel SQLite (kivéve explicit restore)  
 
@@ -45,6 +46,23 @@ sudo pgpanel status
 ```
 
 Image pin a `.env` `PGPANEL_IMAGE=` sorában (pl. `ghcr.io/pgpanel/pgpanel:0.1.0`).
+
+## Databasus és Cloudflare Tunnel
+
+Az image-ek verziózva vannak:
+
+- `databasus/databasus:v3.51.0`
+- `cloudflare/cloudflared:2026.7.3`
+
+Host oldali változás után:
+
+```bash
+sudo pgpanel update --with-host
+```
+
+Tunnel módban a Cloudflare Dashboardban a panel és a Databasus hostname-et
+egyaránt a `http://caddy:80` originre kell irányítani. A telepítő a tokent nem
+írja a Git repositoryba, `.env`-be vagy logba.
 
 ## Csatornák
 

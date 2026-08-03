@@ -14,20 +14,22 @@
 Internet
    │
    ▼
- Caddy (TLS terminate) ──────── edge network
-   │
-   ▼
- Panel :8080 ────────────────── internal network
-   │         │
-   │         ├── Databasus (backup only)
-   │         └── Docker Engine API (socket) ──► PG containers + volumes
+Cloudflare edge (TLS) ──► cloudflared ──► Caddy (HTTP origin)
+                                      │
+                                      ├── Panel :8080
+                                      └── Databasus :4005
+Panel (Docker socket) ────────────────► PG containers + volumes
+Databasus ────────────────────────────► PG containers (management network)
 ```
 
-- Caddy is the only public listener.
+- In direct mode Caddy is the public listener; in Tunnel mode no host 80/443
+  binding is created and `cloudflared` is the outbound-only edge connector.
 - Panel talks to PostgreSQL on the shared management network (`pgpanel_database_management`)
   where clusters are dual-homed as `pgpanel_pg_<slug>` (optional published ports only if opted in).
-- Databasus is internal by default (no public domain); must not receive the Docker socket.
-- Databasus auto-provisioning HTTP API is **off** by default (`DATABASUS_HTTP_API=0`); manual UI setup.
+- Databasus is a manually configured sidecar, reachable on port 4005 through the
+  internal network or its optional Caddy/Tunnel hostname, and must not receive the Docker socket.
+- The Cloudflare Tunnel token is stored separately in `/etc/pgpanel/cloudflare-tunnel.env`
+  with mode 0600; the installer does not manage Cloudflare DNS or remote ingress rules.
 
 ## Adversaries
 
@@ -49,7 +51,7 @@ Internet
 | Session theft | HttpOnly Secure cookie; CSRF; server sessions |
 | Brute force login | Lockout after N failures |
 | Accidental data loss | Delete protection; confirm name; volume not auto-deleted |
-| Backup logic bugs | Outsourced to Databasus; panel only orchestrates |
+| Backup logic bugs | Native PgPanel backup engine is independently verified; optional Databasus runs as a separate sidecar |
 | Panel DB on managed PG | SQLite local to panel so cluster failure ≠ panel failure |
 
 ## Out of scope (future)
@@ -63,6 +65,7 @@ Internet
 - In-app WAF policy + change history (`waf_policies` / `waf_change_log`)
 - Multi-node Docker hosts (`nodes` table; local + remote)
 - Native backup schedules, restore, retention prune
+- Optional Databasus manual backup and PITR workflows
 
 
 ## Residual risks
@@ -70,6 +73,6 @@ Internet
 See SECURITY.md table. Highest priority follow-ups:
 
 1. Split Docker provisioner from HTTP API.
-2. Only enable `DATABASUS_HTTP_API=1` after verifying paths against a pinned Databasus version;
-   integration tests for backup/restore.
+2. Keep Databasus cluster registration manual until its public API contract is
+   verified against a pinned version; perform an explicit backup/restore test.
 3. Optional: rootless Docker + user namespace remapping.

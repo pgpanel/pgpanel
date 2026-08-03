@@ -49,7 +49,11 @@ compose() {
       source "${INSTALL_DIR}/.env"
       set +a
     fi
-    docker compose -f compose.yml "$@"
+    local compose_args=(docker compose -f compose.yml)
+    if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -eq 1 ]]; then
+      compose_args+=(--profile cloudflare)
+    fi
+    "${compose_args[@]}" "$@"
   )
 }
 
@@ -85,6 +89,21 @@ cmd_status() {
     -fsS http://panel:8080/health 2>/dev/null && echo "panel /health: ok" || echo "panel /health: fail"
   docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
     -fsS http://panel:8080/ready 2>/dev/null && echo "panel /ready: ok" || echo "panel /ready: fail"
+  if [[ "${ENABLE_DATABASUS:-1}" -eq 1 ]]; then
+    docker run --rm --network pgpanel_frontend curlimages/curl:8.5.0 \
+      -fsS http://databasus:4005/api/v1/system/health 2>/dev/null \
+      && echo "databasus /api/v1/system/health: ok" \
+      || echo "databasus /api/v1/system/health: fail"
+  fi
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -eq 1 ]]; then
+    cloudflared_id="$(docker ps -q --filter 'label=com.docker.compose.service=cloudflared' | awk 'NR == 1 { print; exit }')"
+    if [[ -n "$cloudflared_id" ]]; then
+      docker inspect -f '{{.State.Health.Status}}' "$cloudflared_id" 2>/dev/null \
+        | sed 's/^/cloudflared health: /'
+    else
+      echo "cloudflared health: not-running"
+    fi
+  fi
   echo ""
   echo "=== Disk ==="
   df -h "$DATA_DIR" 2>/dev/null || df -h /
@@ -133,13 +152,19 @@ cmd_env_check() {
   mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%OLp' "$f")"
   echo "path=$f mode=$mode"
   [[ "$mode" == "600" ]] || echo "WARNING: expected 0600"
-  for k in PGPANEL_MASTER_KEY DATABASUS_INTERNAL_TOKEN PGPANEL_IMAGE; do
+  for k in PGPANEL_MASTER_KEY PGPANEL_IMAGE DATABASUS_DOMAIN; do
     if grep -q "^${k}=" "$f"; then
       echo "present: $k"
     else
       echo "MISSING: $k"
     fi
   done
+  if [[ "${USE_CLOUDFLARE_TUNNEL:-0}" -eq 1 ]]; then
+    token_file="/etc/pgpanel/cloudflare-tunnel.env"
+    mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%OLp' "$token_file" 2>/dev/null || echo missing)"
+    echo "cloudflare token file=$token_file mode=$mode"
+    [[ "$mode" == "600" ]] || echo "WARNING: expected Cloudflare token file mode 0600"
+  fi
 }
 
 main() {

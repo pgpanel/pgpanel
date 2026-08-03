@@ -2,13 +2,15 @@
 
 Self-hosted **PostgreSQL control plane** for Linux VPS.
 
-Provision and manage isolated PostgreSQL clusters with Docker, a secure web admin UI, and backup integration via **Databasus** (backup / WAL / PITR are handled by Databasus, not reimplemented here).
+Provision and manage isolated PostgreSQL clusters with Docker, a secure web
+admin UI, native backups, and an optional manually configured **Databasus**
+backup sidecar.
 
 | | |
 |---|---|
 | **Developer** | Dezső Benedek Péter |
 | **Repository** | https://github.com/pgpanel/pgpanel |
-| **Version** | [`VERSION`](VERSION) (currently `0.1.0`) |
+| **Version** | [`VERSION`](VERSION) (currently `0.1.15`) |
 | **License** | MIT |
 
 ---
@@ -26,8 +28,8 @@ This is the **supported production install path**. It:
 
 1. Installs prerequisites (`curl`, `git`, `openssl`) if needed  
 2. Clones/updates **https://github.com/pgpanel/pgpanel.git** into `/opt/pgpanel`  
-3. Launches the interactive installer (domain, HTTPS, admin, firewall, …)  
-4. Starts **Caddy + panel + Databasus** via Docker Compose  
+3. Launches the interactive installer (domain, Tunnel token, Databasus hostname, firewall, …)
+4. Starts **Caddy + panel + Databasus** and, when enabled, `cloudflared` via Docker Compose
 
 **Notes:**
 
@@ -48,6 +50,22 @@ This is the **supported production install path**. It:
 
 ---
 
+## Cloudflare Tunnel és Databasus
+
+A telepítő token-alapú Cloudflare Tunnel connectort indít
+`cloudflare/cloudflared:2026.7.3` image-ből, és a tokent
+`/etc/pgpanel/cloudflare-tunnel.env` alatt, `0600` jogosultsággal tárolja.
+Tunnel módban a hoston nincs 80/443 Caddy bind; a Cloudflare Dashboardban a
+panel és a Databasus hostname is a `http://caddy:80` originre mutasson.
+
+A Databasus `databasus/databasus:v3.51.0` image-ként fut a
+`/var/lib/pgpanel/databasus` könyvtárral. Az első admin, a storage-ok,
+ütemezések, PITR és restore verification a Databasus UI-ban állítandók be.
+Add hozzá a panel klasztereit `pgpanel_pg_<slug>:5432` címmel. A PgPanel
+natív backup motorja ettől függetlenül megmarad.
+
+---
+
 ## After install
 
 ```bash
@@ -61,6 +79,7 @@ pgpanel version
 | `/opt/pgpanel` | App + Compose |
 | `/opt/pgpanel/.env` | Secrets (`0600`) |
 | `/var/lib/pgpanel` | Panel SQLite + Databasus data |
+| `/etc/pgpanel/cloudflare-tunnel.env` | Tunnel token (`0600`, when enabled) |
 | `/etc/pgpanel/installer.conf` | Non-secret installer config |
 | `/etc/pgpanel/install-answers.env` | Saved answers (resume) |
 | `/var/log/pgpanel` | Installer logs |
@@ -75,7 +94,8 @@ sudo pgpanel update
 sudo bash /opt/pgpanel/deploy/install.sh --mode update
 ```
 
-**Preserved:** `.env` secrets, panel SQLite, PostgreSQL volumes, Databasus data.  
+**Preserved:** `.env` secrets, panel SQLite, PostgreSQL volumes, Databasus data,
+and the Cloudflare Tunnel token.
 **Never** runs `docker compose down -v` during update.
 
 ```bash
@@ -96,7 +116,8 @@ Default panel image:
 ghcr.io/pgpanel/pgpanel:<VERSION>
 ```
 
-- Production install **only pulls** this image (plus Caddy + Databasus). **No VPS build.**  
+- Production install **only pulls** this image plus the pinned Caddy, Databasus,
+  and optional cloudflared images. **No VPS build.**
 - VPS is typically **linux/amd64** — publish that platform (or multi-arch from your Mac).  
 - If pull fails (private/missing package), install **stops** — publish a public GHCR image first.
 
@@ -146,9 +167,11 @@ cd /path/to/pgpanel
 ## Architecture
 
 ```text
-Internet → Caddy :80/:443 → panel :8080 (internal)
-                         → Databasus (internal; optional public subdomain)
+Cloudflare edge → cloudflared → Caddy :80 (internal HTTP) → panel :8080
+                                                   → Databasus :4005
+Direct mode: Internet → Caddy :80/:443 → panel / Databasus
 panel + Docker socket → dynamic PostgreSQL containers (private networks)
+Databasus → dynamic PostgreSQL containers (management network, no socket)
 ```
 
 ```text
@@ -160,6 +183,7 @@ pgpanel/
 │   ├── install.sh          # Full interactive installer
 │   ├── compose.yml
 │   ├── Caddyfile
+│   ├── cloudflare-tunnel.env.example
 │   ├── Dockerfile
 │   ├── pgpanel             # CLI → /usr/local/bin/pgpanel
 │   ├── push-image.sh       # Local image → GHCR
