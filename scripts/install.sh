@@ -166,6 +166,12 @@ detect_arch() {
 }
 
 verify_ubuntu() {
+    # /etc/os-release defines VERSION; keep all sourced names local so it
+    # cannot overwrite the requested PgPanel release tag.
+    local ID=""
+    local VERSION=""
+    local VERSION_ID=""
+
     if [[ ! -f /etc/os-release ]]; then
         die "cannot detect OS: /etc/os-release missing"
     fi
