@@ -98,6 +98,11 @@ Cluster creation requires the selected version's `initdb` binary. If it is
 missing, PgPanel reports the exact package command instead of only returning
 `pg_createcluster failed`.
 
+The default authenticated API limit is 600 requests per IP per minute. Login
+attempts remain limited separately to 10 per five minutes. Health checks and
+static assets are exempt so Caddy and the browser cannot exhaust the API
+bucket.
+
 ## Exposure modes
 
 ### Local

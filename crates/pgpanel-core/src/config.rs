@@ -386,7 +386,7 @@ impl Config {
             rate_limit: RateLimitConfig {
                 login_per_ip: 10,
                 login_window_secs: 300,
-                api_per_ip_per_minute: 120,
+                api_per_ip_per_minute: 600,
             },
             postgres: PostgresConfig {
                 allowed_versions: vec!["16".into(), "17".into(), "18".into()],

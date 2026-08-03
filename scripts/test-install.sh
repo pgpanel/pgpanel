@@ -141,6 +141,9 @@ secure = true
 enabled = true
 proxies = ["127.0.0.1", "::1"]
 prefer_cf_connecting_ip = true
+
+[rate_limit]
+api_per_ip_per_minute = 120
 EOF
     local config_file="${tmp}/etc/pgpanel/pgpanel.toml"
     set_toml_value "${config_file}" databasus enabled true
@@ -166,6 +169,10 @@ EOF
 
     EXPOSURE="local"
     configure_selected_settings
+    awk '
+        /^[[:space:]]*api_per_ip_per_minute[[:space:]]*=[[:space:]]*600/ { limit=1 }
+        END { exit !limit }
+    ' "${config_file}" || fail "legacy API rate limit was not upgraded"
     awk '
         /^[[:space:]]*secure[[:space:]]*=[[:space:]]*false/ { secure=1 }
         /^[[:space:]]*prefer_cf_connecting_ip[[:space:]]*=[[:space:]]*false/ { cf=1 }

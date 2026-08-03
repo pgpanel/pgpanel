@@ -22,6 +22,10 @@ pub async fn rate_limit_middleware(
         .unwrap_or_else(|| "unknown".into());
 
     let path = request.uri().path();
+    if is_rate_limit_exempt(path) {
+        return Ok(next.run(request).await);
+    }
+
     let is_login = path == "/auth/login" && request.method() == axum::http::Method::POST;
 
     let (limit, window_secs) = if is_login {
@@ -80,4 +84,31 @@ pub async fn rate_limit_middleware(
     .map_err(AppError::Db)?;
 
     Ok(next.run(request).await)
+}
+
+fn is_rate_limit_exempt(path: &str) -> bool {
+    path == "/health"
+        || path.starts_with("/health/")
+        || path == "/static"
+        || path.starts_with("/static/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_rate_limit_exempt;
+
+    #[test]
+    fn health_and_static_paths_are_exempt() {
+        assert!(is_rate_limit_exempt("/health/live"));
+        assert!(is_rate_limit_exempt("/health/ready"));
+        assert!(is_rate_limit_exempt("/static/css/app.css"));
+        assert!(is_rate_limit_exempt("/static/js/app.js"));
+    }
+
+    #[test]
+    fn unrelated_paths_are_rate_limited() {
+        assert!(!is_rate_limit_exempt("/dashboard"));
+        assert!(!is_rate_limit_exempt("/healthcheck"));
+        assert!(!is_rate_limit_exempt("/staticity"));
+    }
 }

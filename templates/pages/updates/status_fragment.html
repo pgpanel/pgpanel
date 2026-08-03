@@ -68,7 +68,7 @@
   </div>
   {% endif %}
 
-  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5 space-y-6" x-data="{ installOpen: false, rollbackOpen: false, busy: {{ status.busy }} }">
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5 space-y-6">
     <div class="flex flex-wrap gap-2">
       <form method="post" action="/updates/check" @submit="busy = true">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -79,39 +79,5 @@
     </div>
     <p class="text-xs text-slate-500">Install and rollback require recent re-authentication and continue in the updater daemon after this page returns. Recent auth: <a class="text-teal-600 underline" href="/auth/reauth?return_to=%2Fupdates">re-authenticate</a>.</p>
 
-    <div x-show="installOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div class="bg-white dark:bg-zinc-900 rounded-xl shadow-xl max-w-md w-full p-6" @click.outside="installOpen = false">
-        <h3 class="text-lg font-semibold mb-2">Confirm install</h3>
-        <p class="text-sm text-slate-500 mb-4">This restarts the web UI on the inactive slot. Type <code class="font-mono bg-slate-100 dark:bg-zinc-800 px-1 rounded">INSTALL</code> to confirm.</p>
-        <form method="post" action="/updates/start" class="space-y-3" @submit="busy = true">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label class="block text-sm">Optional exact version
-            <input name="version" placeholder="leave empty for latest" class="mt-1 w-full px-3 py-2 border rounded-lg font-mono text-sm">
-          </label>
-          <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" required> I understand the panel will restart</label>
-          <input name="confirmation" required placeholder="INSTALL" class="w-full px-3 py-2 border rounded-lg font-mono">
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="px-3 py-2 border rounded-lg text-sm" @click="installOpen = false">Cancel</button>
-            <button type="submit" class="px-3 py-2 bg-teal-600 text-white rounded-lg text-sm" :disabled="busy">Start install</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <div x-show="rollbackOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div class="bg-white dark:bg-zinc-900 rounded-xl shadow-xl max-w-md w-full p-6" @click.outside="rollbackOpen = false">
-        <h3 class="text-lg font-semibold mb-2 text-red-600">Confirm rollback</h3>
-        <p class="text-sm text-slate-500 mb-4">This switches traffic back to the previous release. Type <code class="font-mono bg-slate-100 dark:bg-zinc-800 px-1 rounded">ROLLBACK</code> to confirm.</p>
-        <form method="post" action="/updates/rollback" class="space-y-3" @submit="busy = true">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" required> I understand the panel will restart</label>
-          <input name="confirmation" required placeholder="ROLLBACK" class="w-full px-3 py-2 border rounded-lg font-mono">
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="px-3 py-2 border rounded-lg text-sm" @click="rollbackOpen = false">Cancel</button>
-            <button type="submit" class="px-3 py-2 bg-red-600 text-white rounded-lg text-sm" :disabled="busy">Start rollback</button>
-          </div>
-        </form>
-      </div>
-    </div>
   </div>
 </div>

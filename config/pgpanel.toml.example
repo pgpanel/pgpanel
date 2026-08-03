@@ -68,7 +68,7 @@ prefer_cf_connecting_ip = true
 [rate_limit]
 login_per_ip = 10
 login_window_secs = 300
-api_per_ip_per_minute = 120
+api_per_ip_per_minute = 600
 
 # -----------------------------------------------------------------------------
 # PostgreSQL management policy

@@ -247,6 +247,9 @@ jobs:
             Self-hosted PostgreSQL management panel for Ubuntu 24.04. PgPanel runs natively; Docker is used only when optional installer-managed Databasus is selected.
 
             ### Fixes in this release
+            - **Rate limiting**: increased the default authenticated API limit from 120 to 600 requests per IP per minute; existing installations with the old shipped default are migrated during repair
+            - **Health and static traffic**: `/health/*` and `/static/*` no longer consume the API rate-limit bucket, preventing Caddy health checks from receiving `429` and marking the upstream unavailable
+            - **Update dialogs**: moved install/rollback dialogs outside the 3-second HTMX polling fragment so they remain open while status refreshes
             - **PostgreSQL cluster creation diagnostics**: missing server binaries now produce an actionable `apt install postgresql-N` message instead of the opaque `pg_createcluster failed` response
             - **Cluster creation error UX**: sanitized `pg_createcluster` stderr is shown in the styled create form and structured JSON responses; port/version/locale/disk failures receive specific messages
             - **Systemd PostgreSQL runtime access**: the privileged helper can access `/run/postgresql` and `/var/run/postgresql` while creating or starting clusters

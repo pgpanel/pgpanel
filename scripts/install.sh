@@ -1102,12 +1102,46 @@ remove_toml_key() {
     rm -f "${tmp}"
 }
 
+upgrade_legacy_rate_limit() {
+    local config_file="$1"
+    local current_limit
+
+    current_limit="$(
+        awk '
+            /^[[:space:]]*\[[^]]+\][[:space:]]*(#.*)?$/ {
+                normalized = $0
+                sub(/[[:space:]]*#.*$/, "", normalized)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", normalized)
+                in_target = (normalized == "[rate_limit]")
+                next
+            }
+            in_target && /^[[:space:]]*api_per_ip_per_minute[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]]*#.*$/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+            }
+        ' "${config_file}"
+    )"
+
+    # 120 was the shipped default through v0.1.7. Preserve deliberate custom
+    # values while migrating installations that still have the old default.
+    if [[ "${current_limit}" == "120" ]]; then
+        log "raising legacy API rate limit from 120 to 600 requests/minute"
+        set_toml_value "${config_file}" "rate_limit" "api_per_ip_per_minute" "600"
+    fi
+}
+
 configure_selected_settings() {
     local config_file="${CONFIG_DIR}/pgpanel.toml"
     if [[ "${DRY_RUN}" == "1" ]]; then
         log "[dry-run] update explicitly selected exposure/Databasus settings in ${config_file}"
         return 0
     fi
+
+    upgrade_legacy_rate_limit "${config_file}"
 
     case "${EXPOSURE}" in
         local)
