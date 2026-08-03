@@ -1,0 +1,10 @@
+{% extends "layouts/app.html" %}{% block content %}
+<form method="post" class="max-w-md space-y-4 bg-white dark:bg-zinc-900 rounded-xl border p-6">
+<input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><input type="hidden" name="port" value="{{ port }}">
+<div><label class="text-sm">Name</label><input name="name" required class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+<div><label class="text-sm">Password</label><input name="password" type="password" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+<label class="flex gap-2"><input type="checkbox" name="can_login" value="1" checked> Can login</label>
+<label class="flex gap-2"><input type="checkbox" name="can_create_db" value="1"> Can create DB</label>
+{% if allow_superuser %}<label class="flex gap-2"><input type="checkbox" name="is_superuser" value="1"> Superuser</label>{% endif %}
+<button class="px-4 py-2 bg-teal-600 text-white rounded-lg">Create role</button>
+</form>{% endblock %}

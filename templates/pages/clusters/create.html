@@ -1,0 +1,15 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<form method="post" action="/clusters/create" class="max-w-lg bg-white dark:bg-zinc-900 rounded-xl border p-6 space-y-4">
+  <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+  <div><label class="text-sm font-medium">Version</label><select name="version" class="w-full mt-1 px-3 py-2 border rounded-lg">{% for v in allowed_versions %}<option value="{{ v }}">PostgreSQL {{ v }}</option>{% endfor %}</select></div>
+  <div><label class="text-sm font-medium">Name</label><input name="name" required pattern="[a-z][a-z0-9_]{1,31}" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+  <div><label class="text-sm font-medium">Port</label><input name="port" type="number" value="5432" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+  <div><label class="text-sm font-medium">Encoding</label><input name="encoding" value="UTF8" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+  <div><label class="text-sm font-medium">Locale</label><input name="locale" value="C.UTF-8" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+  <div><label class="text-sm font-medium">Listen addresses</label><input name="listen_addresses" value="127.0.0.1" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+  <label class="flex items-center gap-2"><input type="checkbox" name="data_checksums" value="1"> Data checksums</label>
+  <label class="flex items-center gap-2"><input type="checkbox" name="start" value="1" checked> Start after create</label>
+  <button type="submit" class="px-4 py-2 bg-teal-600 text-white rounded-lg">Create cluster</button>
+</form>
+{% endblock %}

@@ -105,8 +105,7 @@ pub fn chain_hash(prev_hash: &str, event: &AuditEvent) -> String {
 }
 
 /// Genesis previous hash (64 zero hex chars).
-pub const AUDIT_GENESIS: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const AUDIT_GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[cfg(test)]
 mod tests {

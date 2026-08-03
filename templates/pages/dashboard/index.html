@@ -1,0 +1,20 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5"><p class="text-sm text-slate-500">Clusters</p><p class="text-3xl font-semibold mt-1">{{ cluster_count }}</p></div>
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5"><p class="text-sm text-slate-500">Online</p><p class="text-3xl font-semibold mt-1 text-emerald-600">{{ online_count }}</p></div>
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5"><p class="text-sm text-slate-500">Monitored</p><p class="text-3xl font-semibold mt-1">{{ samples.len() }}</p></div>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5">
+    <h2 class="font-medium mb-3">Monitoring</h2>
+    {% if samples.is_empty() %}<p class="text-sm text-slate-500">No samples yet</p>{% else %}
+    <ul class="space-y-2 text-sm">{% for s in samples %}<li class="flex justify-between"><span>{{ s.cluster_name }} ({{ s.version }})</span><span>{{ s.connections.unwrap_or(0) }} conn</span></li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5">
+    <h2 class="font-medium mb-3">Recent audit</h2>
+    <ul class="space-y-2 text-sm">{% for e in recent_audit %}<li><span class="font-mono text-xs">{{ e.action }}</span> · {{ e.result }}</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<div class="mb-4"><a href="/clusters" class="text-sm text-teal-600">← Back</a></div>
+<div class="bg-white dark:bg-zinc-900 rounded-xl border p-6 mb-4">
+  <div class="flex items-center justify-between"><h2 class="text-xl font-semibold">{{ cluster.summary.name }} <span class="text-slate-400 text-base">PG {{ cluster.summary.version }}</span></h2><span class="px-2 py-1 rounded-full text-xs bg-slate-100">{{ cluster.summary.status }}</span></div>
+  <dl class="grid grid-cols-2 gap-4 mt-4 text-sm"><div><dt class="text-slate-500">Port</dt><dd>{{ cluster.summary.port }}</dd></div><div><dt class="text-slate-500">Owner</dt><dd>{{ cluster.summary.owner }}</dd></div><div class="col-span-2"><dt class="text-slate-500">Data directory</dt><dd class="font-mono text-xs">{{ cluster.summary.data_directory }}</dd></div></dl>
+</div>
+<div class="flex flex-wrap gap-2 mb-6">
+  <form method="post" action="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/start"><input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><button class="px-3 py-1.5 rounded-lg border text-sm">Start</button></form>
+  <form method="post" action="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/stop"><input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><button class="px-3 py-1.5 rounded-lg border text-sm">Stop</button></form>
+  <form method="post" action="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/restart"><input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><button class="px-3 py-1.5 rounded-lg border text-sm">Restart</button></form>
+  <a href="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/config" class="px-3 py-1.5 rounded-lg border text-sm">Config</a>
+  <a href="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/logs" class="px-3 py-1.5 rounded-lg border text-sm">Logs</a>
+  <a href="/databases/{{ cluster.summary.version }}/{{ cluster.summary.name }}?port={{ cluster.summary.port }}" class="px-3 py-1.5 rounded-lg border text-sm">Databases</a>
+  <a href="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/delete" class="px-3 py-1.5 rounded-lg border border-red-300 text-red-600 text-sm">Delete</a>
+</div>
+{% if !has_credentials %}
+<div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 rounded-xl p-4 mb-4"><p class="text-sm font-medium">Connection credentials required</p>
+<form method="post" action="/clusters/{{ cluster.summary.version }}/{{ cluster.summary.name }}/credentials" class="grid grid-cols-2 gap-3 mt-3 text-sm">
+  <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+  <input name="host" value="127.0.0.1" placeholder="Host" class="px-2 py-1 border rounded"><input name="port" type="number" value="{{ cluster.summary.port }}" class="px-2 py-1 border rounded">
+  <input name="username" value="postgres" placeholder="Username" class="px-2 py-1 border rounded"><input name="database" value="postgres" class="px-2 py-1 border rounded">
+  <select name="connection_mode" class="px-2 py-1 border rounded"><option value="password">Password</option><option value="scram">SCRAM</option><option value="socket">Unix socket</option></select>
+  <input name="password" type="password" placeholder="Password" class="px-2 py-1 border rounded"><input name="socket_dir" placeholder="/var/run/postgresql" class="px-2 py-1 border rounded col-span-2">
+  <button type="submit" class="col-span-2 px-3 py-2 bg-teal-600 text-white rounded">Save credentials</button>
+</form></div>{% endif %}
+{% endblock %}

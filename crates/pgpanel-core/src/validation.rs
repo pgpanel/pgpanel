@@ -5,17 +5,13 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::path::{Component, Path, PathBuf};
 
-static CLUSTER_NAME_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-z][a-z0-9_]{1,31}$").expect("cluster name regex")
-});
+static CLUSTER_NAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-z][a-z0-9_]{1,31}$").expect("cluster name regex"));
 
-static PG_IDENT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$").expect("pg ident regex")
-});
+static PG_IDENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$").expect("pg ident regex"));
 
-static VERSION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^(16|17|18)$").expect("version regex")
-});
+static VERSION_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(16|17|18)$").expect("version regex"));
 
 /// Validate a cluster system identifier.
 pub fn validate_cluster_name(name: &str) -> CoreResult<()> {
@@ -32,7 +28,7 @@ pub fn validate_cluster_name(name: &str) -> CoreResult<()> {
             "cluster name must not contain whitespace or control characters".into(),
         ));
     }
-    if name.chars().any(|c| !c.is_ascii()) {
+    if !name.is_ascii() {
         return Err(CoreError::InvalidInput(
             "cluster name must be ASCII only".into(),
         ));
@@ -116,9 +112,7 @@ pub fn validate_path_under_roots(path: &str, roots: &[PathBuf]) -> CoreResult<Pa
     for c in p.components() {
         match c {
             Component::ParentDir => {
-                return Err(CoreError::InvalidInput(
-                    "path must not contain '..'".into(),
-                ));
+                return Err(CoreError::InvalidInput("path must not contain '..'".into()));
             }
             Component::Normal(os) => {
                 let s = os.to_string_lossy();
@@ -184,7 +178,14 @@ pub fn validate_listen_addresses(value: &str) -> CoreResult<()> {
 
 /// Validate encoding name.
 pub fn validate_encoding(encoding: &str) -> CoreResult<()> {
-    const ALLOWED: &[&str] = &["UTF8", "SQL_ASCII", "LATIN1", "LATIN2", "WIN1250", "WIN1252"];
+    const ALLOWED: &[&str] = &[
+        "UTF8",
+        "SQL_ASCII",
+        "LATIN1",
+        "LATIN2",
+        "WIN1250",
+        "WIN1252",
+    ];
     if !ALLOWED.iter().any(|a| a.eq_ignore_ascii_case(encoding)) {
         return Err(CoreError::InvalidInput(format!(
             "encoding '{encoding}' is not in the allowlist"
@@ -252,7 +253,9 @@ pub fn validate_config_value(key: &str, value: &str) -> CoreResult<()> {
         )));
     }
     if value.is_empty() || value.len() > 256 {
-        return Err(CoreError::InvalidInput("invalid configuration value".into()));
+        return Err(CoreError::InvalidInput(
+            "invalid configuration value".into(),
+        ));
     }
     if value.contains(|c: char| c.is_control() || c == '\n' || c == '\r') {
         return Err(CoreError::InvalidInput(
@@ -269,9 +272,7 @@ pub fn validate_config_value(key: &str, value: &str) -> CoreResult<()> {
         }
         "ssl" | "wal_compression" => {
             if !matches!(value, "on" | "off" | "true" | "false" | "1" | "0") {
-                return Err(CoreError::InvalidInput(format!(
-                    "{key} must be on/off"
-                )));
+                return Err(CoreError::InvalidInput(format!("{key} must be on/off")));
             }
         }
         "listen_addresses" => validate_listen_addresses(value)?,
@@ -299,9 +300,7 @@ pub fn validate_config_value(key: &str, value: &str) -> CoreResult<()> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
             {
-                return Err(CoreError::InvalidInput(format!(
-                    "invalid value for {key}"
-                )));
+                return Err(CoreError::InvalidInput(format!("invalid value for {key}")));
             }
         }
     }
@@ -348,9 +347,7 @@ mod tests {
         let roots = vec![PathBuf::from("/var/lib/postgresql")];
         assert!(validate_path_under_roots("/var/lib/postgresql/../etc/passwd", &roots).is_err());
         assert!(validate_path_under_roots("/etc/passwd", &roots).is_err());
-        assert!(
-            validate_path_under_roots("/var/lib/postgresql/17/main", &roots).is_ok()
-        );
+        assert!(validate_path_under_roots("/var/lib/postgresql/17/main", &roots).is_ok());
     }
 
     #[test]

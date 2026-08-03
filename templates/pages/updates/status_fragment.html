@@ -1,0 +1,117 @@
+<div id="updates-panel" hx-get="/updates/status-fragment" hx-trigger="every 3s" hx-swap="outerHTML" class="space-y-4">
+  {% if !status.daemon_available %}
+  <div class="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 p-4 text-sm text-amber-800 dark:text-amber-200">
+    <p class="font-medium">Updater daemon unavailable</p>
+    <p class="mt-1">{% if let Some(msg) = status.daemon_message.as_ref() %}{{ msg }}{% else %}The privileged updater service is not reachable.{% endif %}</p>
+  </div>
+  {% endif %}
+
+  <div class="grid gap-4 md:grid-cols-2">
+    <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5">
+      <p class="text-sm text-slate-500">Installed version</p>
+      <p class="text-2xl font-semibold mt-1">{{ status.installed_version }}</p>
+      {% if let Some(latest) = status.latest.as_ref() %}
+      <p class="mt-3 text-sm text-slate-500">Latest available</p>
+      <p class="text-lg font-medium">{{ latest.version }} <span class="text-slate-400 font-normal">({{ latest.tag }})</span></p>
+      <p class="text-xs text-slate-400 mt-1">Published {{ latest.published_at }}</p>
+      {% else %}
+      <p class="mt-3 text-sm text-slate-500">Latest available</p>
+      <p class="text-sm text-slate-400">No release cached — run Check</p>
+      {% endif %}
+    </div>
+
+    <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5 text-sm space-y-2">
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Channel</span><span class="font-medium">{{ status.channel }}</span></div>
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Auto-install</span><span class="font-medium">{% if status.auto_install %}enabled{% else %}disabled{% endif %}</span></div>
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Check interval</span><span class="font-medium">{{ status.check_interval_display }}</span></div>
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Schedule window</span><span class="font-medium">{% if let Some(w) = status.schedule_window.as_ref() %}{{ w }}{% else %}—{% endif %}</span></div>
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Daemon phase</span><span class="font-medium {% if status.busy %}text-amber-600{% endif %}">{{ status.phase }}</span></div>
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Last check</span><span class="font-medium">{% if let Some(t) = status.last_check.as_ref() %}{{ t }}{% else %}—{% endif %}</span></div>
+      {% if let Some(s) = status.last_success.as_ref() %}
+      <div class="flex justify-between gap-4"><span class="text-slate-500">Last success</span><span class="font-medium text-emerald-600">op {{ s.operation_id }}{% if let Some(v) = s.version.as_ref() %} · {{ v }}{% endif %} · {{ s.finished_at }}</span></div>
+      {% endif %}
+      {% if let Some(err) = status.last_error.as_ref() %}
+      <div class="pt-1"><span class="text-slate-500">Last error</span><p class="mt-1 text-red-600">{{ err }}</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5 text-sm">
+    <p class="font-medium mb-3">Deployment slots</p>
+    <div class="grid gap-3 sm:grid-cols-2">
+      <div>
+        <p class="text-slate-500">Active</p>
+        <p class="font-medium">{% if let Some(s) = status.active_slot.as_ref() %}{{ s }}{% else %}—{% endif %}{% if let Some(v) = status.current_version.as_ref() %} · {{ v }}{% endif %}</p>
+      </div>
+      <div>
+        <p class="text-slate-500">Previous</p>
+        <p class="font-medium">{% if let Some(s) = status.previous_slot.as_ref() %}{{ s }}{% else %}—{% endif %}{% if let Some(v) = status.previous_version.as_ref() %} · {{ v }}{% endif %}</p>
+      </div>
+    </div>
+  </div>
+
+  {% if !status.progress.is_empty() %}
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5">
+    <p class="font-medium text-sm mb-3">Progress</p>
+    <ul class="space-y-2 text-sm">
+      {% for row in status.progress %}
+      <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-slate-100 dark:border-zinc-800 pt-2 first:border-0 first:pt-0">
+        <span class="font-mono text-xs text-slate-400">#{{ row.id }}</span>
+        <span class="text-slate-500">{{ row.phase }}</span>
+        <span>{{ row.message }}</span>
+        {% if let Some(pct) = row.progress_pct %}
+        <span class="text-slate-400">{{ pct }}%</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="bg-white dark:bg-zinc-900 rounded-xl border p-5 space-y-6" x-data="{ installOpen: false, rollbackOpen: false, busy: {{ status.busy }} }">
+    <div class="flex flex-wrap gap-2">
+      <form method="post" action="/updates/check" @submit="busy = true">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="px-4 py-2 border rounded-lg text-sm hover:bg-slate-50 dark:hover:bg-zinc-800 disabled:opacity-50" :disabled="busy" {% if !status.daemon_available || status.busy %}disabled{% endif %}>Check for updates</button>
+      </form>
+      <button type="button" class="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm disabled:opacity-50" @click="installOpen = true" :disabled="busy || {{ !status.daemon_available }}" {% if !status.daemon_available || status.busy %}disabled{% endif %}>Install update</button>
+      <button type="button" class="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm disabled:opacity-50" @click="rollbackOpen = true" :disabled="busy || {{ !status.daemon_available }}" {% if !status.daemon_available || status.busy %}disabled{% endif %}>Rollback</button>
+    </div>
+    <p class="text-xs text-slate-500">Install and rollback require recent re-authentication and continue in the updater daemon after this page returns. Recent auth: <a class="text-teal-600 underline" href="/auth/reauth?return_to=%2Fupdates">re-authenticate</a>.</p>
+
+    <div x-show="installOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div class="bg-white dark:bg-zinc-900 rounded-xl shadow-xl max-w-md w-full p-6" @click.outside="installOpen = false">
+        <h3 class="text-lg font-semibold mb-2">Confirm install</h3>
+        <p class="text-sm text-slate-500 mb-4">This restarts the web UI on the inactive slot. Type <code class="font-mono bg-slate-100 dark:bg-zinc-800 px-1 rounded">INSTALL</code> to confirm.</p>
+        <form method="post" action="/updates/start" class="space-y-3" @submit="busy = true">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="block text-sm">Optional exact version
+            <input name="version" placeholder="leave empty for latest" class="mt-1 w-full px-3 py-2 border rounded-lg font-mono text-sm">
+          </label>
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" required> I understand the panel will restart</label>
+          <input name="confirmation" required placeholder="INSTALL" class="w-full px-3 py-2 border rounded-lg font-mono">
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="px-3 py-2 border rounded-lg text-sm" @click="installOpen = false">Cancel</button>
+            <button type="submit" class="px-3 py-2 bg-teal-600 text-white rounded-lg text-sm" :disabled="busy">Start install</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div x-show="rollbackOpen" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div class="bg-white dark:bg-zinc-900 rounded-xl shadow-xl max-w-md w-full p-6" @click.outside="rollbackOpen = false">
+        <h3 class="text-lg font-semibold mb-2 text-red-600">Confirm rollback</h3>
+        <p class="text-sm text-slate-500 mb-4">This switches traffic back to the previous release. Type <code class="font-mono bg-slate-100 dark:bg-zinc-800 px-1 rounded">ROLLBACK</code> to confirm.</p>
+        <form method="post" action="/updates/rollback" class="space-y-3" @submit="busy = true">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" required> I understand the panel will restart</label>
+          <input name="confirmation" required placeholder="ROLLBACK" class="w-full px-3 py-2 border rounded-lg font-mono">
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="px-3 py-2 border rounded-lg text-sm" @click="rollbackOpen = false">Cancel</button>
+            <button type="submit" class="px-3 py-2 bg-red-600 text-white rounded-lg text-sm" :disabled="busy">Start rollback</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

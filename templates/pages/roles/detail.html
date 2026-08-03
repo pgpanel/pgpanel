@@ -1,0 +1,3 @@
+{% extends "layouts/app.html" %}{% block content %}
+<div class="bg-white dark:bg-zinc-900 rounded-xl border p-6"><h2 class="text-xl font-semibold">{{ role.name }}</h2><dl class="mt-4 text-sm space-y-2"><div>Superuser: {{ role.is_superuser }}</div><div>Can login: {{ role.can_login }}</div><div>Can create DB: {{ role.can_create_db }}</div><div>Can create role: {{ role.can_create_role }}</div></dl></div>
+{% endblock %}

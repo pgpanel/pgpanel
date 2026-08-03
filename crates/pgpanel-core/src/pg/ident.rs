@@ -66,10 +66,9 @@ pub fn is_allowlisted_extension(name: &str) -> bool {
             | "hstore"
             | "postgres_fdw"
             | "file_fdw"
-            | "postgres_fdw"
             | "tablefunc"
             | "pg_buffercache"
-    ) || name == "uuid-ossp"
+    )
 }
 
 /// Build a CREATE ROLE statement with safe defaults (no superuser).
@@ -132,7 +131,12 @@ mod tests {
 
     #[test]
     fn malicious_idents() {
-        for n in ["'; DROP TABLE", "Robert'); DROP TABLE students;--", "../x", "a;b"] {
+        for n in [
+            "'; DROP TABLE",
+            "Robert'); DROP TABLE students;--",
+            "../x",
+            "a;b",
+        ] {
             assert!(quote_simple_ident(n).is_err());
         }
     }
@@ -143,6 +147,7 @@ mod tests {
         assert!(sql.contains("NOSUPERUSER"));
         assert!(sql.contains("NOCREATEDB"));
         assert!(sql.contains("\"app_user\""));
-        assert!(!sql.contains("SUPERUSER"));
+        assert!(!sql.split_whitespace().any(|t| t == "SUPERUSER"));
+        assert!(sql.split_whitespace().any(|t| t == "NOSUPERUSER"));
     }
 }

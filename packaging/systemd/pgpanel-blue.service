@@ -1,0 +1,60 @@
+[Unit]
+Description=PgPanel web application (blue slot)
+Documentation=https://github.com/pgpanel/pgpanel
+After=network-online.target pgpanel-helper.service pgpanel-updater.service
+Wants=network-online.target pgpanel-updater.service
+Requires=pgpanel-helper.service
+# Soft dependency on updater only (Wants): panel stays up if updater is down.
+# No BindsTo/PartOf updater — blue-green slot flips must not restart the daemon.
+
+[Service]
+Type=simple
+User=pgpanel
+Group=pgpanel
+WorkingDirectory=/opt/pgpanel/slots/blue/current
+
+Environment=PGPANEL_CONFIG=/etc/pgpanel/pgpanel.toml
+Environment=PGPANEL_SLOT=blue
+Environment=PGPANEL_LISTEN=127.0.0.1:8081
+
+ExecStart=/opt/pgpanel/slots/blue/current/bin/pgpanel-web --config /etc/pgpanel/pgpanel.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening — unprivileged; no sudo / no systemd control
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+RuntimeDirectory=pgpanel
+RuntimeDirectoryMode=0750
+StateDirectory=pgpanel
+StateDirectoryMode=0750
+
+ReadOnlyPaths=/opt/pgpanel/slots/blue/current /etc/pgpanel
+ReadWritePaths=/var/lib/pgpanel /run/pgpanel /opt/pgpanel/state
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pgpanel-blue
+
+[Install]
+WantedBy=multi-user.target

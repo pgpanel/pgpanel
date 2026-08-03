@@ -162,16 +162,10 @@ impl<S: ProgressSink> ProgressReporter<S> {
     }
 
     /// Emit with progress fraction.
-    pub fn emit_progress(
-        &mut self,
-        phase: UpdatePhase,
-        message: impl Into<String>,
-        progress: f64,
-    ) {
+    pub fn emit_progress(&mut self, phase: UpdatePhase, message: impl Into<String>, progress: f64) {
         self.seq += 1;
-        self.sink.emit(
-            ProgressEvent::new(self.seq, phase, message).with_progress(progress),
-        );
+        self.sink
+            .emit(ProgressEvent::new(self.seq, phase, message).with_progress(progress));
     }
 
     /// Borrow the inner sink.

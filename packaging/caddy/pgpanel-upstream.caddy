@@ -1,0 +1,8 @@
+# Managed by pgpanel-updater — do not edit manually
+# Active slot: blue (127.0.0.1:8081) | green (127.0.0.1:8082)
+# Caddy edge remains http://127.0.0.1:8080
+reverse_proxy 127.0.0.1:8081 {
+	health_uri /health/live
+	health_interval 10s
+	health_timeout 5s
+}

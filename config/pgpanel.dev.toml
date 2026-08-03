@@ -1,0 +1,92 @@
+# PgPanel development configuration
+
+[app]
+secret_key = "dev-secret-key-change-me-in-production-32b"
+active_slot = "blue"
+slot = "blue"
+allow_superuser_creation = false
+
+[server]
+listen = "127.0.0.1:8081"
+
+[paths]
+sqlite = "./data/pgpanel.db"
+helper_socket = "./data/helper.sock"
+updater_socket = "./data/updater.sock"
+state_dir = "./data"
+config_dir = "./config"
+signing_public_key = "./keys/signing.pub"
+
+[session]
+cookie_name = "pgpanel_session"
+ttl_secs = 43200
+absolute_ttl_secs = 604800
+same_site = "Strict"
+secure = false
+reauth_window_secs = 300
+
+[auth]
+totp_issuer = "PgPanel Dev"
+max_failed_logins = 10
+lockout_secs = 300
+require_totp_for_destructive = true
+
+[trusted_proxies]
+enabled = true
+proxies = ["127.0.0.1", "::1"]
+prefer_cf_connecting_ip = true
+
+[rate_limit]
+login_per_ip = 30
+login_window_secs = 300
+api_per_ip_per_minute = 300
+
+[postgres]
+allowed_versions = ["16", "17", "18"]
+data_directory_roots = ["/var/lib/postgresql"]
+default_statement_timeout_ms = 30000
+default_max_rows = 500
+
+[postgres.binaries]
+pg_lsclusters = "/usr/bin/pg_lsclusters"
+pg_createcluster = "/usr/bin/pg_createcluster"
+pg_ctlcluster = "/usr/bin/pg_ctlcluster"
+pg_renamecluster = "/usr/bin/pg_renamecluster"
+pg_dropcluster = "/usr/bin/pg_dropcluster"
+pg_conftool = "/usr/bin/pg_conftool"
+
+[databasus]
+enabled = false
+
+[monitoring]
+retention_hours = 24
+sample_interval_secs = 60
+
+[updates]
+github_owner = "pgpanel"
+github_repo = "pgpanel"
+channel = "stable"
+check_interval_secs = 86400
+auto_install = false
+timeout_secs = 600
+max_download_bytes = 536870912
+drain_secs = 30
+install_root = "/opt/pgpanel"
+
+[caddy]
+upstream_config_path = "/etc/caddy/pgpanel-upstream.caddy"
+blue_upstream = "127.0.0.1:8081"
+green_upstream = "127.0.0.1:8082"
+reload_argv = ["/usr/bin/systemctl", "reload", "caddy"]
+
+[timeouts]
+cluster_create_secs = 120
+cluster_control_secs = 60
+cluster_delete_secs = 120
+config_update_secs = 90
+log_read_secs = 15
+helper_default_secs = 30
+
+[logging]
+level = "info,pgpanel_web=debug,pgpanel_helper=debug"
+json = false

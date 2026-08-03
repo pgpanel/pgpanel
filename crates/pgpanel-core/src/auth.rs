@@ -141,16 +141,15 @@ pub fn totp_generate(issuer: &str, account_name: &str) -> CoreResult<(String, St
         6,
         1,
         30,
-        secret.to_bytes().map_err(|e| CoreError::Internal(format!("totp secret: {e}")))?,
+        secret
+            .to_bytes()
+            .map_err(|e| CoreError::Internal(format!("totp secret: {e}")))?,
         Some(issuer.to_string()),
         account_name.to_string(),
     )
     .map_err(|e| CoreError::Internal(format!("totp: {e}")))?;
-    let url = totp.get_qr_base64().unwrap_or_default();
-    // Prefer otpauth URL for provisioning.
     let otpauth = totp.get_url();
     let secret_b32 = secret.to_encoded().to_string();
-    let _ = url; // QR optional; clients can use otpauth
     Ok((secret_b32, otpauth))
 }
 
@@ -253,7 +252,9 @@ mod tests {
     fn totp_roundtrip() {
         let (secret, _url) = totp_generate("PgPanel", "admin").unwrap();
         // We can't easily get current code without clock; just ensure verify rejects garbage.
-        assert!(!totp_verify(&secret, "000000").unwrap() || totp_verify(&secret, "000000").unwrap());
+        assert!(
+            !totp_verify(&secret, "000000").unwrap() || totp_verify(&secret, "000000").unwrap()
+        );
         assert!(!totp_verify(&secret, "abcdef").unwrap());
     }
 

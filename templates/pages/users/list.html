@@ -1,0 +1,4 @@
+{% extends "layouts/app.html" %}{% block content %}
+<div class="flex justify-between mb-4"><h2 class="text-lg font-medium">Panel users</h2><a href="/users/create" class="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-sm">Create user</a></div>
+<table class="w-full text-sm bg-white dark:bg-zinc-900 rounded-xl border"><thead><tr class="bg-slate-50 dark:bg-zinc-800"><th class="p-3 text-left">Username</th><th class="p-3 text-left">Role</th><th class="p-3 text-left">TOTP</th><th class="p-3 text-left">Last login</th></tr></thead><tbody>{% for u in users %}<tr class="border-t"><td class="p-3">{{ u.username }}</td><td class="p-3">{{ u.role }}</td><td class="p-3">{% if u.totp_enabled != 0 %}Yes{% else %}No{% endif %}</td><td class="p-3">{{ u.last_login_at.as_deref().unwrap_or("—") }}</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

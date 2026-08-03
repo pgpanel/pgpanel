@@ -1,0 +1,250 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+            artifact: pgpanel-linux-amd64.tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+            artifact: pgpanel-linux-arm64.tar.gz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+        with:
+          workspaces: .
+          key: ${{ matrix.target }}
+
+      - name: Verify tag matches Cargo version
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pgpanel-web") | .version')"
+          if [[ "${TAG_VERSION}" != "${CARGO_VERSION}" ]]; then
+            echo "Tag version ${TAG_VERSION} does not match Cargo version ${CARGO_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642aa39e7199bdb5aadc130
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Build frontend
+        run: |
+          npm ci
+          ./scripts/build-frontend.sh
+
+      - name: Build release binaries
+        env:
+          PGPANEL_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          export PGPANEL_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cargo build --release --target "${{ matrix.target }}"
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="dist/stage"
+          rm -rf "${STAGE}"
+          mkdir -p "${STAGE}/bin"
+
+          cp "target/${{ matrix.target }}/release/pgpanel-web" "${STAGE}/bin/"
+          cp "target/${{ matrix.target }}/release/pgpanel-helper" "${STAGE}/bin/"
+          cp "target/${{ matrix.target }}/release/pgpanel-updater" "${STAGE}/bin/"
+          chmod 0755 "${STAGE}/bin/"*
+
+          # Flat archive root (bin/, static/, …) for installer + updater extraction.
+          cp -a static templates migrations config packaging scripts "${STAGE}/"
+          mkdir -p "${STAGE}/keys"
+          cp keys/signing.pub.example "${STAGE}/keys/signing.pub.example"
+          if [[ -f keys/signing.pub ]]; then
+            cp keys/signing.pub "${STAGE}/keys/signing.pub"
+          fi
+
+          printf '%s\n' "${VERSION}" > "${STAGE}/VERSION"
+          printf '%s\n' "${GITHUB_REF_NAME}" > "${STAGE}/GIT_TAG"
+          printf '%s\n' "${PGPANEL_GIT_COMMIT}" > "${STAGE}/GIT_COMMIT"
+          printf '%s\n' "${PGPANEL_BUILD_TIME}" > "${STAGE}/BUILD_TIME"
+
+          tar -czf "dist/${{ matrix.artifact }}" -C "${STAGE}" .
+          tar -tzf "dist/${{ matrix.artifact }}" | head -40
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@50769540e7f4b0730c9eeff5363960b6c7e25441
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Download artifacts
+        uses: actions/download-artifact@cc26de661d2e2690ebee7fd0a4d35e79ee11500b
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release manifest
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          jq -n \
+            --arg version "${VERSION}" \
+            --arg released_at "${RELEASED_AT}" \
+            --arg min_upgrade_version "0.1.0" \
+            --arg amd64 "pgpanel-linux-amd64.tar.gz" \
+            --arg arm64 "pgpanel-linux-arm64.tar.gz" \
+            '{
+              version: $version,
+              released_at: $released_at,
+              min_upgrade_version: $min_upgrade_version,
+              artifacts: {
+                "linux-amd64": $amd64,
+                "linux-arm64": $arm64
+              },
+              changelog: null
+            }' > dist/manifest.json
+
+          jq -e '
+            (.version | type == "string" and length > 0) and
+            (.released_at | type == "string" and length > 0) and
+            (.min_upgrade_version | type == "string") and
+            (.artifacts | type == "object") and
+            (.artifacts["linux-amd64"] == "pgpanel-linux-amd64.tar.gz") and
+            (.artifacts["linux-arm64"] == "pgpanel-linux-arm64.tar.gz") and
+            (.changelog == null or (.changelog | type == "string"))
+          ' dist/manifest.json >/dev/null
+
+          echo "Validated manifest.json:"
+          jq . dist/manifest.json
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          # Sign cover for both platform archives and the manifest.
+          sha256sum \
+            pgpanel-linux-amd64.tar.gz \
+            pgpanel-linux-arm64.tar.gz \
+            manifest.json \
+            > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign SHA256SUMS (required)
+        env:
+          PGPANEL_SIGNING_KEY: ${{ secrets.PGPANEL_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGPANEL_SIGNING_KEY:-}" ]]; then
+            echo "FATAL: PGPANEL_SIGNING_KEY secret is required for release publish" >&2
+            exit 1
+          fi
+
+          KEY_FILE="$(mktemp)"
+          cleanup() {
+            rm -f "${KEY_FILE}"
+          }
+          trap cleanup EXIT
+
+          # Accept raw Ed25519 PEM, or base64-encoded PEM (common for GitHub secrets).
+          if printf '%s' "${PGPANEL_SIGNING_KEY}" | grep -q "BEGIN.*PRIVATE KEY"; then
+            printf '%s\n' "${PGPANEL_SIGNING_KEY}" > "${KEY_FILE}"
+          else
+            if ! printf '%s' "${PGPANEL_SIGNING_KEY}" | base64 -d > "${KEY_FILE}" 2>/dev/null; then
+              echo "FATAL: PGPANEL_SIGNING_KEY is neither PEM nor valid base64(PEM)" >&2
+              exit 1
+            fi
+            if ! grep -q "BEGIN.*PRIVATE KEY" "${KEY_FILE}"; then
+              echo "FATAL: decoded PGPANEL_SIGNING_KEY is not a PEM private key" >&2
+              exit 1
+            fi
+          fi
+          chmod 600 "${KEY_FILE}"
+
+          # OpenSSL 3 Ed25519 PureEdDSA → raw 64-byte signature (ed25519-dalek compatible).
+          openssl pkeyutl -sign -inkey "${KEY_FILE}" -rawin -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+          SIG_SIZE="$(wc -c < dist/SHA256SUMS.sig | tr -d ' ')"
+          if [[ "${SIG_SIZE}" != "64" ]]; then
+            echo "FATAL: expected 64-byte Ed25519 signature, got ${SIG_SIZE} bytes" >&2
+            exit 1
+          fi
+
+          # Never print key material; only confirm signature artifact size.
+          echo "SHA256SUMS.sig created (${SIG_SIZE} bytes, raw Ed25519)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c95f6c1f58fa8757d81128e4825cef94b22f5b75
+        with:
+          files: |
+            dist/pgpanel-linux-amd64.tar.gz
+            dist/pgpanel-linux-arm64.tar.gz
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/manifest.json
+          body: |
+            ## PgPanel ${{ github.ref_name }}
+
+            Self-hosted PostgreSQL management panel for Ubuntu 24.04 (no Docker at runtime).
+
+            ### What's included
+            - **Web panel** (`pgpanel-web`): Axum + Askama + HTMX/Alpine/Tailwind UI for clusters, databases, roles, SQL console, monitoring, audit, settings, and updates
+            - **Privileged helper** (`pgpanel-helper`): Unix-socket daemon for PostgreSQL cluster/ops with peer UID checks
+            - **Updater daemon** (`pgpanel-updater`): signed GitHub releases, blue/green slots, Caddy switch, SQLite online backup, rollback
+            - **Auth & security**: sessions, CSRF, rate limits, TOTP enrollment + backup codes, re-auth for sensitive actions
+            - **Packaging**: systemd units (helper, updater, blue/green), Caddy reverse proxy on `127.0.0.1:8080`, fail-closed installer with Ed25519 + SHA-256 verification
+            - **Docs**: INSTALL, UPDATE, BACKUP, SECURITY, threat model, Cloudflare Tunnel, Databasus (optional external; not installed by the installer)
+
+            ### Install (Ubuntu 24.04)
+            ```bash
+            curl -fsSL -o /tmp/pgpanel-install.sh \
+              "https://raw.githubusercontent.com/pgpanel/pgpanel/${{ github.ref_name }}/scripts/install.sh"
+            sudo bash /tmp/pgpanel-install.sh --version ${{ github.ref_name }}
+            ```
+
+            After install, open `http://127.0.0.1:8080` (or via Cloudflare Tunnel) and complete first-user setup.
+
+            ### Artifacts
+            - `pgpanel-linux-amd64.tar.gz` / `pgpanel-linux-arm64.tar.gz`
+            - `manifest.json`, `SHA256SUMS`, `SHA256SUMS.sig` (Ed25519 over SHA256SUMS)
+          draft: false
+          # Tags containing '-' (e.g. v1.2.0-rc.1) are prereleases; updater
+          # "stable" channel skips these, "prerelease" channel includes them.
+          prerelease: ${{ contains(github.ref_name, '-') }}

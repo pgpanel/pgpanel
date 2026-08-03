@@ -1,0 +1,13 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<div class="max-w-lg bg-white dark:bg-zinc-900 rounded-xl border p-6">
+  <h2 class="text-lg font-semibold text-red-600 mb-2">Delete cluster {{ name }}</h2>
+  <p class="text-sm text-slate-500 mb-4">This action is irreversible. Type <code class="font-mono bg-slate-100 px-1 rounded">{{ confirm_phrase }}</code> to confirm.</p>
+  <form method="post" action="/clusters/{{ version }}/{{ name }}/delete" class="space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+    <input name="confirmation" required placeholder="{{ confirm_phrase }}" class="w-full px-3 py-2 border rounded-lg font-mono">
+    <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="stop_first" value="1" checked> Stop cluster first</label>
+    <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg">Delete permanently</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,49 @@
+name: Dependency checks
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Run cargo deny
+        run: cargo deny check

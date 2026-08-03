@@ -23,3 +23,8 @@
 !docs/**/*.png
 screenshots/*.png
 !screenshots/.gitkeep
+
+keys/signing.key
+keys/*.key
+
+crates/pgpanel-updater/data/

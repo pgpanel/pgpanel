@@ -1,0 +1,76 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<div class="max-w-3xl space-y-6">
+  <div>
+    <h2 class="text-xl font-semibold">Security</h2>
+    <p class="text-sm text-slate-500 dark:text-zinc-400 mt-1">Manage two-factor authentication for your account.</p>
+  </div>
+
+  {% if let Some(err) = error %}
+  <div class="p-3 rounded-lg bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300 text-sm">{{ err }}</div>
+  {% endif %}
+
+  {% if !enabled %}
+  <section class="rounded-xl border border-slate-200 dark:border-zinc-800 p-5 space-y-4">
+    <div>
+      <h3 class="font-medium">Enable authenticator app</h3>
+      <p class="text-sm text-slate-500 dark:text-zinc-400 mt-1">Add this account to your authenticator app, then confirm with the six-digit code it displays.</p>
+    </div>
+    {% match manual_secret %}
+    {% when Some with (secret) %}
+    <div>
+      <p class="text-xs uppercase tracking-wide text-slate-500">Manual setup key</p>
+      <code class="block mt-1 p-3 rounded-lg bg-slate-100 dark:bg-zinc-800 break-all select-all">{{ secret }}</code>
+    </div>
+    {% when None %}{% endmatch %}
+    {% match otpauth_uri %}
+    {% when Some with (uri) %}
+    <details>
+      <summary class="cursor-pointer text-sm text-teal-700 dark:text-teal-400">Show otpauth URI</summary>
+      <code class="block mt-2 p-3 rounded-lg bg-slate-100 dark:bg-zinc-800 text-xs break-all select-all">{{ uri }}</code>
+    </details>
+    {% when None %}{% endmatch %}
+    <form method="post" action="/settings/security/totp/enable" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+      <label class="block text-sm font-medium">Current authenticator code
+        <input name="totp_code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="mt-1 w-full max-w-xs px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+      </label>
+      <button type="submit" class="px-4 py-2 rounded-lg bg-teal-600 text-white font-medium">Enable TOTP</button>
+    </form>
+  </section>
+  {% else %}
+  <section class="rounded-xl border border-emerald-200 dark:border-emerald-900 p-5 space-y-4">
+    <div>
+      <h3 class="font-medium text-emerald-800 dark:text-emerald-300">Authenticator app enabled</h3>
+      <p class="text-sm text-slate-500 dark:text-zinc-400 mt-1">Use your authenticator app or a backup code when signing in.</p>
+    </div>
+    <form method="post" action="/settings/security/totp/regenerate" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+      <label class="block text-sm font-medium">Current authenticator code
+        <input name="totp_code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="mt-1 w-full max-w-xs px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+      </label>
+      <button type="submit" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-zinc-700">Regenerate backup codes</button>
+    </form>
+    <form method="post" action="/settings/security/totp/disable" class="pt-4 border-t border-emerald-200 dark:border-emerald-900 space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+      <p class="text-sm font-medium">Disable TOTP</p>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <input name="password" type="password" autocomplete="current-password" placeholder="Account password" class="px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+        <input name="totp_code" type="text" inputmode="numeric" placeholder="Current TOTP code" class="px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+      </div>
+      <button type="submit" class="px-4 py-2 rounded-lg border border-red-300 text-red-700 dark:text-red-300">Disable TOTP</button>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if !backup_codes.is_empty() %}
+  <section class="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-5 space-y-3">
+    <h3 class="font-medium text-amber-900 dark:text-amber-200">Save your backup codes</h3>
+    <p class="text-sm text-amber-800 dark:text-amber-300">These codes are shown once. Store them somewhere safe; each code works only one time.</p>
+    <div class="grid sm:grid-cols-2 gap-2 font-mono text-sm">
+      {% for code in backup_codes %}<code class="p-2 rounded bg-white/70 dark:bg-zinc-900/70 select-all">{{ code }}</code>{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

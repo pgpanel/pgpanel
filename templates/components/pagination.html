@@ -1,0 +1,7 @@
+{% if pagination.total_pages > 1 %}
+<nav class="flex items-center justify-between mt-4 text-sm">
+  {% if pagination.has_prev() %}<a href="?page={{ pagination.prev_page() }}" class="px-3 py-1 rounded border hover:bg-slate-50 dark:hover:bg-zinc-800">Previous</a>{% else %}<span></span>{% endif %}
+  <span>Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+  {% if pagination.has_next() %}<a href="?page={{ pagination.next_page() }}" class="px-3 py-1 rounded border hover:bg-slate-50 dark:hover:bg-zinc-800">Next</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}

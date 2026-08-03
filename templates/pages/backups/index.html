@@ -1,0 +1,47 @@
+{% extends "layouts/app.html" %}{% block content %}
+<div class="space-y-6 max-w-3xl">
+  <p class="text-sm text-slate-600 dark:text-slate-400">PgPanel does not run backups itself. Optional Databasus health status is shown below. Backup listing, trigger, and restore verification are not available through the documented public API without a future explicit adapter.</p>
+
+  <dl class="bg-white dark:bg-zinc-900 rounded-xl border text-sm divide-y dark:divide-zinc-800">
+    <div class="flex justify-between gap-4 p-4">
+      <dt class="text-slate-500">Integration</dt>
+      <dd>{% if enabled %}Enabled{% else %}Disabled{% endif %}</dd>
+    </div>
+    <div class="flex justify-between gap-4 p-4">
+      <dt class="text-slate-500">Configured</dt>
+      <dd>{% if configured %}Yes (<code class="text-xs">base_url</code> set){% else %}No{% endif %}</dd>
+    </div>
+    <div class="flex justify-between gap-4 p-4">
+      <dt class="text-slate-500">Health</dt>
+      <dd>
+        {% if health_status == "healthy" %}
+        <span class="text-emerald-700 dark:text-emerald-400 font-medium">Healthy</span>
+        {% else %}{% if health_status == "degraded" %}
+        <span class="text-amber-700 dark:text-amber-400 font-medium">Degraded</span>
+        {% else %}
+        <span class="text-slate-600 dark:text-slate-300 font-medium">Unavailable</span>
+        {% endif %}{% endif %}
+        {% if let Some(msg) = health_message %}<span class="block mt-1 text-xs text-slate-500">{{ msg }}</span>{% endif %}
+      </dd>
+    </div>
+  </dl>
+
+  <div>
+    <h2 class="text-sm font-medium mb-2">Operations</h2>
+    <ul class="bg-white dark:bg-zinc-900 rounded-xl border text-sm divide-y dark:divide-zinc-800">
+      <li class="flex justify-between gap-4 p-4">
+        <span>Job listing</span>
+        <span class="text-slate-500">{% if job_listing_supported %}Supported{% else %}Unsupported — public API requires <code class="text-xs">database_id</code>; no PgPanel mapping{% endif %}</span>
+      </li>
+      <li class="flex justify-between gap-4 p-4">
+        <span>Trigger backup</span>
+        <span class="text-slate-500">{% if trigger_supported %}Supported{% else %}Unsupported — not exposed via configured/public API{% endif %}</span>
+      </li>
+      <li class="flex justify-between gap-4 p-4">
+        <span>Restore verification</span>
+        <span class="text-slate-500">{% if restore_verification_supported %}Supported{% else %}Unsupported — not exposed via configured/public API{% endif %}</span>
+      </li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

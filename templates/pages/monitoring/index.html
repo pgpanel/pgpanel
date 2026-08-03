@@ -1,0 +1,6 @@
+{% extends "layouts/app.html" %}{% block content %}
+<div class="grid gap-4">{% for s in samples %}
+<div class="bg-white dark:bg-zinc-900 rounded-xl border p-4"><h3 class="font-medium">{{ s.cluster_name }} <span class="text-slate-400">PG {{ s.version }}</span></h3>
+<div class="grid grid-cols-4 gap-4 mt-3 text-sm"><div><p class="text-slate-500">Connections</p><p class="text-lg font-semibold">{{ s.connections.unwrap_or(0) }}</p></div><div><p class="text-slate-500">TPS</p><p class="text-lg font-semibold">{{ s.transactions_per_sec.unwrap_or(0.0) }}</p></div><div><p class="text-slate-500">Cache hit</p><p class="text-lg font-semibold">{% match s.cache_hit_ratio %}{% when Some with (v) %}{{ v }}{% when None %}—{% endmatch %}</p></div><div><p class="text-slate-500">DB size</p><p class="text-lg font-semibold">{{ s.db_size_bytes.unwrap_or(0) }}</p></div></div></div>
+{% endfor %}{% if samples.is_empty() %}<p class="text-slate-500">No monitoring data yet.</p>{% endif %}</div>
+{% endblock %}

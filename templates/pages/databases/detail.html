@@ -1,0 +1,4 @@
+{% extends "layouts/app.html" %}{% block content %}
+<div class="bg-white dark:bg-zinc-900 rounded-xl border p-6"><h2 class="text-xl font-semibold">{{ database.name }}</h2><dl class="mt-4 grid grid-cols-2 gap-3 text-sm"><div><dt class="text-slate-500">Owner</dt><dd>{{ database.owner }}</dd></div><div><dt class="text-slate-500">Encoding</dt><dd>{{ database.encoding }}</dd></div><div><dt class="text-slate-500">Size</dt><dd>{{ database.size_bytes }} bytes</dd></div></dl>
+<form method="post" action="/databases/{{ version }}/{{ cluster }}/{{ database.name }}/delete" class="mt-4"><input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><input type="hidden" name="port" value="5432"><button class="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-sm">Drop database</button></form></div>
+{% endblock %}

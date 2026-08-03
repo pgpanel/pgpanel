@@ -1,0 +1,148 @@
+# PgPanel configuration
+# Install path: /etc/pgpanel/pgpanel.toml
+# Secrets may be overridden via environment variables (see comments below).
+
+# -----------------------------------------------------------------------------
+# Application identity
+# -----------------------------------------------------------------------------
+[app]
+# Minimum 32 characters. Override with PGPANEL_SECRET_KEY in production.
+secret_key = "CHANGE_ME_GENERATE_A_SECURE_SECRET_KEY_AT_LEAST_32_CHARS"
+# Slot currently receiving traffic via Caddy (blue or green).
+active_slot = "blue"
+# This process instance slot (set by systemd: blue or green).
+slot = "blue"
+# Allow creating PostgreSQL superusers (disabled by default; requires TOTP).
+allow_superuser_creation = false
+
+# -----------------------------------------------------------------------------
+# HTTP server (loopback only — Caddy terminates external traffic)
+# -----------------------------------------------------------------------------
+[server]
+listen = "127.0.0.1:8081"
+# Public URL for generated links when behind Cloudflare Tunnel.
+# public_base_url = "https://panel.example.com"
+
+# -----------------------------------------------------------------------------
+# Filesystem paths
+# -----------------------------------------------------------------------------
+[paths]
+sqlite = "/var/lib/pgpanel/pgpanel.db"
+helper_socket = "/run/pgpanel/helper.sock"
+updater_socket = "/run/pgpanel/updater.sock"
+state_dir = "/var/lib/pgpanel"
+config_dir = "/etc/pgpanel"
+signing_public_key = "/etc/pgpanel/signing.pub"
+
+# -----------------------------------------------------------------------------
+# Session cookies
+# -----------------------------------------------------------------------------
+[session]
+cookie_name = "pgpanel_session"
+ttl_secs = 43200              # 12 hours sliding
+absolute_ttl_secs = 604800    # 7 days absolute maximum
+same_site = "Strict"          # Lax or Strict
+secure = false                # set true before serving through an HTTPS tunnel
+reauth_window_secs = 300      # recent auth required for destructive ops
+
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
+[auth]
+totp_issuer = "PgPanel"
+max_failed_logins = 5
+lockout_secs = 900
+require_totp_for_destructive = true
+
+# -----------------------------------------------------------------------------
+# Trusted proxies (Cloudflare Tunnel, local reverse proxy)
+# -----------------------------------------------------------------------------
+[trusted_proxies]
+enabled = true
+proxies = ["127.0.0.1", "::1"]
+prefer_cf_connecting_ip = true
+
+# -----------------------------------------------------------------------------
+# Rate limiting
+# -----------------------------------------------------------------------------
+[rate_limit]
+login_per_ip = 10
+login_window_secs = 300
+api_per_ip_per_minute = 120
+
+# -----------------------------------------------------------------------------
+# PostgreSQL management policy
+# -----------------------------------------------------------------------------
+[postgres]
+allowed_versions = ["16", "17", "18"]
+data_directory_roots = ["/var/lib/postgresql"]
+default_statement_timeout_ms = 30000
+default_max_rows = 500
+
+[postgres.binaries]
+pg_lsclusters = "/usr/bin/pg_lsclusters"
+pg_createcluster = "/usr/bin/pg_createcluster"
+pg_ctlcluster = "/usr/bin/pg_ctlcluster"
+pg_renamecluster = "/usr/bin/pg_renamecluster"
+pg_dropcluster = "/usr/bin/pg_dropcluster"
+pg_conftool = "/usr/bin/pg_conftool"
+
+# -----------------------------------------------------------------------------
+# Databasus integration (optional)
+# -----------------------------------------------------------------------------
+[databasus]
+enabled = false
+# base_url = "https://databasus.example.com"
+# api_key = "override with PGPANEL_DATABASUS_API_KEY"
+timeout_secs = 10
+tls_verify = true
+
+# -----------------------------------------------------------------------------
+# Monitoring sample retention
+# -----------------------------------------------------------------------------
+[monitoring]
+retention_hours = 72
+sample_interval_secs = 60
+
+# -----------------------------------------------------------------------------
+# GitHub release updates
+# -----------------------------------------------------------------------------
+[updates]
+github_owner = "pgpanel"
+github_repo = "pgpanel"
+channel = "stable"            # stable or prerelease
+check_interval_secs = 86400
+auto_install = false
+# schedule_window = "Sun 03:00-05:00 UTC"
+timeout_secs = 600
+max_download_bytes = 536870912  # 512 MiB
+drain_secs = 30
+install_root = "/opt/pgpanel"
+
+# -----------------------------------------------------------------------------
+# Caddy blue-green upstream control
+# -----------------------------------------------------------------------------
+[caddy]
+upstream_config_path = "/etc/caddy/pgpanel-upstream.caddy"
+blue_upstream = "127.0.0.1:8081"
+green_upstream = "127.0.0.1:8082"
+# admin_endpoint = "http://127.0.0.1:2019"
+reload_argv = ["/usr/bin/systemctl", "reload", "caddy"]
+
+# -----------------------------------------------------------------------------
+# Operation timeouts (seconds)
+# -----------------------------------------------------------------------------
+[timeouts]
+cluster_create_secs = 120
+cluster_control_secs = 60
+cluster_delete_secs = 120
+config_update_secs = 90
+log_read_secs = 15
+helper_default_secs = 30
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+[logging]
+level = "info,pgpanel_web=debug,pgpanel_helper=debug"
+json = true

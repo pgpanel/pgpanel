@@ -1,0 +1,3 @@
+{% extends "layouts/app.html" %}{% block content %}
+<ul class="space-y-2">{% for c in clusters %}<li><a href="/clusters/{{ c.version }}/{{ c.name }}/logs" class="block bg-white dark:bg-zinc-900 rounded-xl border p-4 hover:border-teal-500">{{ c.name }} <span class="text-slate-400">PG {{ c.version }}</span></a></li>{% endfor %}</ul>
+{% endblock %}

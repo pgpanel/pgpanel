@@ -1,0 +1,59 @@
+[Unit]
+Description=PgPanel privileged updater daemon
+Documentation=https://github.com/pgpanel/pgpanel
+After=network-online.target
+Wants=network-online.target
+# Intentionally independent of blue/green: slot restarts during blue-green
+# must not stop or restart this daemon (updates continue over the socket).
+
+[Service]
+Type=simple
+User=root
+Group=pgpanel
+WorkingDirectory=/opt/pgpanel/current
+
+Environment=PGPANEL_CONFIG=/etc/pgpanel/pgpanel.toml
+
+# Long-lived serve mode; listens on paths.updater_socket (/run/pgpanel/updater.sock).
+ExecStartPre=-/bin/rm -f /run/pgpanel/updater.sock
+ExecStart=/opt/pgpanel/current/bin/pgpanel-updater --config /etc/pgpanel/pgpanel.toml serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# Allow in-flight install/rollback to finish before SIGKILL (matches updates.timeout_secs).
+TimeoutStopSec=650
+
+# Hardening (root service — scoped filesystem + network families)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+UMask=0007
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+ProtectSystem=strict
+# Releases/slots/state, SQLite status, Caddy upstream snippet, runtime sockets,
+# and systemd private bus (systemctl start/stop/reload of slots + caddy).
+ReadWritePaths=/opt/pgpanel /var/lib/pgpanel /etc/caddy/pgpanel-upstream.caddy /run/pgpanel /run/systemd
+ReadOnlyPaths=/etc/pgpanel /usr/bin/systemctl /bin/systemctl /etc/caddy/Caddyfile /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system
+
+RuntimeDirectory=pgpanel
+RuntimeDirectoryMode=0750
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pgpanel-updater
+
+[Install]
+WantedBy=multi-user.target

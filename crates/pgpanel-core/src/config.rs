@@ -77,6 +77,13 @@ pub struct PathsConfig {
     pub config_dir: PathBuf,
     /// Signing public key path.
     pub signing_public_key: PathBuf,
+    /// Privileged updater Unix socket.
+    #[serde(default = "default_updater_socket")]
+    pub updater_socket: PathBuf,
+}
+
+fn default_updater_socket() -> PathBuf {
+    PathBuf::from("/run/pgpanel/updater.sock")
 }
 
 /// Session cookies.
@@ -277,9 +284,8 @@ pub struct LoggingConfig {
 impl Config {
     /// Load from a TOML file, applying environment overrides for secrets.
     pub fn load(path: &std::path::Path) -> CoreResult<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            CoreError::Config(format!("failed to read {}: {e}", path.display()))
-        })?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| CoreError::Config(format!("failed to read {}: {e}", path.display())))?;
         let mut cfg: Config = toml::from_str(&text)?;
         if let Ok(secret) = std::env::var("PGPANEL_SECRET_KEY") {
             if !secret.is_empty() {
@@ -356,6 +362,7 @@ impl Config {
                 state_dir: PathBuf::from("./data"),
                 config_dir: PathBuf::from("./config"),
                 signing_public_key: PathBuf::from("./keys/signing.pub"),
+                updater_socket: PathBuf::from("./data/updater.sock"),
             },
             session: SessionConfig {
                 cookie_name: "pgpanel_session".into(),
@@ -417,11 +424,7 @@ impl Config {
                 blue_upstream: "127.0.0.1:8081".into(),
                 green_upstream: "127.0.0.1:8082".into(),
                 admin_endpoint: None,
-                reload_argv: vec![
-                    "/usr/bin/systemctl".into(),
-                    "reload".into(),
-                    "caddy".into(),
-                ],
+                reload_argv: vec!["/usr/bin/systemctl".into(), "reload".into(), "caddy".into()],
             },
             timeouts: TimeoutsConfig {
                 cluster_create_secs: 120,

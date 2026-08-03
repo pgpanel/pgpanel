@@ -194,7 +194,7 @@ pub enum HelperResult {
     /// Operation succeeded.
     Ok {
         /// Typed success body.
-        data: HelperOk,
+        data: Box<HelperOk>,
     },
     /// Operation failed.
     Err {
@@ -471,8 +471,7 @@ mod tests {
             op: HelperOp::Ping,
         };
         let frame = encode_frame(&env, MAX_REQUEST_BYTES).unwrap();
-        let (decoded, consumed): (Envelope, _) =
-            decode_frame(&frame, MAX_REQUEST_BYTES).unwrap();
+        let (decoded, consumed): (Envelope, _) = decode_frame(&frame, MAX_REQUEST_BYTES).unwrap();
         assert_eq!(consumed, frame.len());
         assert!(matches!(decoded.op, HelperOp::Ping));
     }

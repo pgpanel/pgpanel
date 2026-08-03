@@ -1,0 +1,10 @@
+{% extends "layouts/app.html" %}{% block content %}
+<form method="post" class="space-y-4">
+<input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><input type="hidden" name="port" value="{{ port }}"><input type="hidden" name="database" value="{{ database }}">
+<textarea name="query" rows="8" class="w-full font-mono text-sm px-3 py-2 border rounded-xl bg-white dark:bg-zinc-900" placeholder="SELECT ...">{{ query }}</textarea>
+<div class="flex items-center gap-3"><button class="px-4 py-2 bg-teal-600 text-white rounded-lg">Execute</button>{% if read_only %}<span class="text-sm text-amber-600">Read-only mode</span>{% endif %}</div>
+</form>
+{% if let Some(r) = result %}
+<div class="mt-4 bg-white dark:bg-zinc-900 rounded-xl border overflow-auto"><p class="p-3 text-sm text-slate-500">{{ r.row_count }} rows · {{ r.duration_ms }}ms{% if r.truncated %} (truncated){% endif %}</p>
+<table class="w-full text-sm"><thead><tr>{% for col in r.columns %}<th class="p-2 text-left bg-slate-50 dark:bg-zinc-800">{{ col }}</th>{% endfor %}</tr></thead><tbody>{% for row in r.rows %}<tr class="border-t">{% for cell in row %}<td class="p-2 font-mono text-xs">{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+{% endif %}{% endblock %}

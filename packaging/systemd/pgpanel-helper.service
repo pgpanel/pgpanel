@@ -1,0 +1,51 @@
+[Unit]
+Description=PgPanel privileged helper daemon
+Documentation=https://github.com/pgpanel/pgpanel
+After=network-online.target
+Wants=network-online.target
+# Independent of updater and web slots: helper must stay up across blue-green flips.
+
+[Service]
+Type=simple
+User=root
+Group=pgpanel
+WorkingDirectory=/opt/pgpanel/current
+
+Environment=PGPANEL_CONFIG=/etc/pgpanel/pgpanel.toml
+
+ExecStart=/opt/pgpanel/current/bin/pgpanel-helper --config /etc/pgpanel/pgpanel.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+
+# Hardening (root service — scoped filesystem access)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+UMask=0007
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Helper needs broader access for postgresql-common; limit writes explicitly.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pgpanel /run/pgpanel /var/lib/postgresql /etc/postgresql /var/log/postgresql /opt/pgpanel
+ReadOnlyPaths=/usr/bin/pg_lsclusters /usr/bin/pg_createcluster /usr/bin/pg_ctlcluster /usr/bin/pg_renamecluster /usr/bin/pg_dropcluster /usr/bin/pg_conftool /etc/pgpanel
+
+RuntimeDirectory=pgpanel
+RuntimeDirectoryMode=0750
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pgpanel-helper
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<div class="flex justify-between items-center mb-4"><h2 class="text-lg font-medium">PostgreSQL Clusters</h2><a href="/clusters/create" class="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm">Create cluster</a></div>
+{% if clusters.is_empty() %}
+<div class="text-center py-12"><h3 class="text-lg font-medium">No clusters</h3><p class="mt-2 text-sm text-slate-500">Create your first PostgreSQL cluster to get started.</p></div>
+{% else %}
+<div class="bg-white dark:bg-zinc-900 rounded-xl border overflow-hidden"><table class="w-full text-sm"><thead class="bg-slate-50 dark:bg-zinc-800"><tr><th class="text-left p-3">Version</th><th class="text-left p-3">Name</th><th class="text-left p-3">Port</th><th class="text-left p-3">Status</th><th class="text-left p-3"></th></tr></thead><tbody>
+{% for c in clusters %}<tr class="border-t dark:border-zinc-800"><td class="p-3">{{ c.version }}</td><td class="p-3 font-medium">{{ c.name }}</td><td class="p-3">{{ c.port }}</td><td class="p-3"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100">{{ c.status }}</span></td><td class="p-3"><a href="/clusters/{{ c.version }}/{{ c.name }}" class="text-teal-600">View</a></td></tr>{% endfor %}
+</tbody></table></div>{% endif %}
+{% endblock %}

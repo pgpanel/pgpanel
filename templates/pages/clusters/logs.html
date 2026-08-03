@@ -1,0 +1,6 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+<p class="text-sm text-slate-500 mb-2">{{ log_path }}{% if truncated %} (truncated){% endif %}</p>
+<pre class="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs overflow-auto max-h-[70vh] font-mono">{% for line in lines %}{{ line }}
+{% endfor %}</pre>
+{% endblock %}

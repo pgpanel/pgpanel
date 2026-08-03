@@ -108,13 +108,7 @@ pub fn permissions_for(role: Role) -> HashSet<Permission> {
     let mut set = HashSet::new();
     match role {
         Role::Viewer => {
-            set.extend([
-                ClustersRead,
-                DatabasesRead,
-                RolesRead,
-                LogsRead,
-                AuditRead,
-            ]);
+            set.extend([ClustersRead, DatabasesRead, RolesRead, LogsRead, AuditRead]);
         }
         Role::Operator => {
             set.extend(permissions_for(Role::Viewer));

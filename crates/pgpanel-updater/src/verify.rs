@@ -3,6 +3,8 @@
 use crate::error::{UpdaterError, UpdaterResult};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::path::Component;
 use std::path::Path;
 
 /// Compute SHA-256 hex digest of a file.
@@ -20,6 +22,7 @@ pub fn sha256_bytes(data: &[u8]) -> String {
 /// Parse `SHA256SUMS` content into (filename, hex digest) pairs.
 pub fn parse_sha256sums(content: &str) -> UpdaterResult<Vec<(String, String)>> {
     let mut entries = Vec::new();
+    let mut filenames = HashSet::new();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -37,6 +40,26 @@ pub fn parse_sha256sums(content: &str) -> UpdaterResult<Vec<(String, String)>> {
                 "SHA256SUMS line has unexpected extra fields".into(),
             ));
         }
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(UpdaterError::Verify(format!(
+                "invalid SHA-256 digest for {filename}"
+            )));
+        }
+        let path = Path::new(filename);
+        if path.is_absolute()
+            || path.components().count() != 1
+            || !matches!(path.components().next(), Some(Component::Normal(_)))
+            || filename.contains('\\')
+        {
+            return Err(UpdaterError::Verify(format!(
+                "invalid path in SHA256SUMS: {filename}"
+            )));
+        }
+        if !filenames.insert(filename) {
+            return Err(UpdaterError::Verify(format!(
+                "duplicate checksum entry: {filename}"
+            )));
+        }
         entries.push((filename.to_string(), hash.to_lowercase()));
     }
     if entries.is_empty() {
@@ -45,9 +68,43 @@ pub fn parse_sha256sums(content: &str) -> UpdaterResult<Vec<(String, String)>> {
     Ok(entries)
 }
 
-/// Verify files listed in SHA256SUMS against a directory.
-pub fn verify_sha256sums(content: &str, base_dir: &Path) -> UpdaterResult<()> {
-    for (filename, expected) in parse_sha256sums(content)? {
+/// Verify exactly the downloaded subset of files listed in SHA256SUMS.
+///
+/// The manifest may contain checksums for both architecture archives, while
+/// the updater intentionally downloads only the selected archive.
+pub fn verify_sha256sums(
+    content: &str,
+    base_dir: &Path,
+    required_files: &[&str],
+) -> UpdaterResult<()> {
+    let entries = parse_sha256sums(content)?;
+    let mut required = HashSet::new();
+    for filename in required_files {
+        let path = Path::new(filename);
+        if path.is_absolute()
+            || path.components().count() != 1
+            || !matches!(path.components().next(), Some(Component::Normal(_)))
+        {
+            return Err(UpdaterError::Verify(format!(
+                "invalid required checksum path: {filename}"
+            )));
+        }
+        if !required.insert(*filename) {
+            return Err(UpdaterError::Verify(format!(
+                "duplicate required checksum path: {filename}"
+            )));
+        }
+    }
+    let mut found = HashSet::new();
+    for (filename, expected) in entries {
+        if !required.contains(filename.as_str()) {
+            continue;
+        }
+        if !found.insert(filename.clone()) {
+            return Err(UpdaterError::Verify(format!(
+                "duplicate checksum entry: {filename}"
+            )));
+        }
         let path = base_dir.join(&filename);
         if !path.is_file() {
             return Err(UpdaterError::Verify(format!(
@@ -61,21 +118,28 @@ pub fn verify_sha256sums(content: &str, base_dir: &Path) -> UpdaterResult<()> {
             )));
         }
     }
+    for filename in required {
+        if !found.contains(filename) {
+            return Err(UpdaterError::Verify(format!(
+                "required file missing from SHA256SUMS: {filename}"
+            )));
+        }
+    }
     Ok(())
 }
 
-/// Load a pinned Ed25519 verifying key from raw 32-byte seed or PEM-like hex file.
+/// Load a pinned Ed25519 verifying key from raw 32-byte hex file.
 pub fn load_verifying_key(path: &Path) -> UpdaterResult<VerifyingKey> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| UpdaterError::Verify(format!("failed to read public key: {e}")))?;
     let trimmed = text.trim();
-    let key_bytes = if trimmed.starts_with("-----") {
+    if trimmed.starts_with("-----") {
         return Err(UpdaterError::Verify(
             "PEM public keys are not supported; use raw 32-byte hex".into(),
         ));
-    } else {
-        hex::decode(trimmed).map_err(|e| UpdaterError::Verify(format!("invalid hex key: {e}")))?
-    };
+    }
+    let key_bytes =
+        hex::decode(trimmed).map_err(|e| UpdaterError::Verify(format!("invalid hex key: {e}")))?;
     let array: [u8; 32] = key_bytes
         .try_into()
         .map_err(|_| UpdaterError::Verify("public key must be 32 bytes".into()))?;
@@ -85,12 +149,16 @@ pub fn load_verifying_key(path: &Path) -> UpdaterResult<VerifyingKey> {
 
 /// Parse detached signature bytes (hex or raw).
 pub fn parse_signature_bytes(data: &[u8]) -> UpdaterResult<Signature> {
-    let sig_bytes = if data.iter().all(|b| b.is_ascii_hexdigit() || b.is_ascii_whitespace()) {
+    let sig_bytes = if data
+        .iter()
+        .all(|b| b.is_ascii_hexdigit() || b.is_ascii_whitespace())
+    {
         let hex_str = String::from_utf8_lossy(data)
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect::<String>();
-        hex::decode(hex_str).map_err(|e| UpdaterError::Verify(format!("invalid hex signature: {e}")))?
+        hex::decode(hex_str)
+            .map_err(|e| UpdaterError::Verify(format!("invalid hex signature: {e}")))?
     } else {
         data.to_vec()
     };
@@ -132,9 +200,7 @@ pub fn verify_artifact_checksum(
         .iter()
         .find(|(name, _)| name == artifact_name)
         .ok_or_else(|| {
-            UpdaterError::Verify(format!(
-                "artifact {artifact_name} not listed in SHA256SUMS"
-            ))
+            UpdaterError::Verify(format!("artifact {artifact_name} not listed in SHA256SUMS"))
         })?
         .1
         .clone();
@@ -157,7 +223,8 @@ mod tests {
 
     #[test]
     fn parse_sha256sums_works() {
-        let content = "abcd1234  file.tar.gz\nef567890  manifest.json\n";
+        let content = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  file.tar.gz\n\
+                       bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  manifest.json\n";
         let entries = parse_sha256sums(content).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, "file.tar.gz");
@@ -193,7 +260,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let key_path = dir.path().join("signing.pub");
-        std::fs::write(key_path, hex::encode(verifying_key.to_bytes())).unwrap();
+        std::fs::write(&key_path, hex::encode(verifying_key.to_bytes())).unwrap();
         let sig_hex = hex::encode(signature.to_bytes());
         verify_sha256sums_signature(&key_path, sums, sig_hex.as_bytes()).unwrap();
     }
@@ -212,12 +279,38 @@ mod tests {
     }
 
     #[test]
+    fn verify_sha256sums_checks_required_subset() {
+        let dir = TempDir::new().unwrap();
+        let selected = dir.path().join("selected.tar.gz");
+        let manifest = dir.path().join("manifest.json");
+        std::fs::write(&selected, b"selected").unwrap();
+        std::fs::write(&manifest, b"manifest").unwrap();
+        let selected_hash = sha256_file(&selected).unwrap();
+        let manifest_hash = sha256_file(&manifest).unwrap();
+        let sums = format!(
+            "{selected_hash}  selected.tar.gz\n\
+             {}  other-arch.tar.gz\n\
+             {manifest_hash}  manifest.json\n",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+        verify_sha256sums(&sums, dir.path(), &["selected.tar.gz", "manifest.json"]).unwrap();
+    }
+
+    #[test]
+    fn checksum_parser_rejects_duplicates_and_paths() {
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert!(parse_sha256sums(&format!("{hash}  file\n{hash}  file\n")).is_err());
+        assert!(parse_sha256sums(&format!("{hash}  ../file\n")).is_err());
+    }
+
+    #[test]
     fn verify_artifact_checksum_rejects_mismatch() {
         let dir = TempDir::new().unwrap();
         let artifact = dir.path().join("pgpanel-linux-amd64.tar.gz");
         std::fs::write(&artifact, b"data").unwrap();
         let sums = "0000000000000000000000000000000000000000000000000000000000000000  pgpanel-linux-amd64.tar.gz\n";
-        let err = verify_artifact_checksum(&artifact, sums, "pgpanel-linux-amd64.tar.gz").unwrap_err();
+        let err =
+            verify_artifact_checksum(&artifact, sums, "pgpanel-linux-amd64.tar.gz").unwrap_err();
         assert!(matches!(err, UpdaterError::Verify(_)));
     }
 }

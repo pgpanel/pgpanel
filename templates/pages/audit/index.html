@@ -1,0 +1,4 @@
+{% extends "layouts/app.html" %}{% block content %}
+<form method="get" class="mb-4 flex gap-2"><input name="action" value="{{ action_filter }}" placeholder="Filter by action" class="px-3 py-2 border rounded-lg"><button class="px-3 py-2 border rounded-lg">Filter</button><a href="/audit/export" class="px-3 py-2 border rounded-lg">Export CSV</a></form>
+<table class="w-full text-sm bg-white dark:bg-zinc-900 rounded-xl border"><thead><tr class="bg-slate-50 dark:bg-zinc-800"><th class="p-3 text-left">Time</th><th class="p-3 text-left">User</th><th class="p-3 text-left">Action</th><th class="p-3 text-left">Result</th></tr></thead><tbody>{% for e in entries %}<tr class="border-t"><td class="p-3 text-xs">{{ e.at }}</td><td class="p-3">{{ e.username.as_deref().unwrap_or("—") }}</td><td class="p-3 font-mono text-xs">{{ e.action }}</td><td class="p-3">{{ e.result }}</td></tr>{% endfor %}</tbody></table>
+{% include "components/pagination.html" %}{% endblock %}

@@ -1,0 +1,7 @@
+{% extends "layouts/app.html" %}
+{% block content %}
+{% if let Some(n) = notice %}
+<div class="mb-4 rounded-lg border border-teal-200 bg-teal-50 dark:bg-teal-950/40 dark:border-teal-900 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">{{ n }}</div>
+{% endif %}
+{% include "pages/updates/status_fragment.html" %}
+{% endblock %}

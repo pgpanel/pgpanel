@@ -13,4 +13,4 @@ pub mod validation;
 pub mod version;
 
 pub use error::{CoreError, CoreResult};
-pub use version::{GIT_COMMIT, VERSION, BUILD_TIME};
+pub use version::{BUILD_TIME, GIT_COMMIT, VERSION};

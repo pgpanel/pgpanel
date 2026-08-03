@@ -1,0 +1,4 @@
+{% extends "layouts/app.html" %}{% block content %}
+<table class="w-full text-sm bg-white dark:bg-zinc-900 rounded-xl border mb-4"><tbody>{% for s in settings %}<tr class="border-t"><td class="p-3 font-mono">{{ s.key }}</td><td class="p-3">{% if s.is_secret %}********{% else %}{{ s.value }}{% endif %}</td></tr>{% endfor %}</tbody></table>
+<form method="post" class="max-w-md space-y-3"><input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}"><input name="key" placeholder="setting key" class="w-full px-3 py-2 border rounded-lg"><input name="value" placeholder="value" class="w-full px-3 py-2 border rounded-lg"><button class="px-4 py-2 bg-teal-600 text-white rounded-lg">Update setting</button></form>
+{% endblock %}

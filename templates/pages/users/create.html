@@ -1,0 +1,8 @@
+{% extends "layouts/app.html" %}{% block content %}
+<form method="post" class="max-w-md space-y-4 bg-white dark:bg-zinc-900 rounded-xl border p-6">
+<input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+<div><label class="text-sm">Username</label><input name="username" required class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+<div><label class="text-sm">Password</label><input name="password" type="password" required minlength="12" class="w-full mt-1 px-3 py-2 border rounded-lg"></div>
+<div><label class="text-sm">Role</label><select name="role" class="w-full mt-1 px-3 py-2 border rounded-lg">{% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></div>
+<button class="px-4 py-2 bg-teal-600 text-white rounded-lg">Create user</button>
+</form>{% endblock %}

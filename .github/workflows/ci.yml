@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+        with:
+          workspaces: .
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642aa39e7199bdb5aadc130
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build CSS
+        run: ./scripts/build-frontend.sh
+
+      - name: Verify app.css exists
+        run: test -f static/css/app.css
+
+  security:
+    name: Security audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630cea06186a6955be9e87935
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1f0c7b61d2617c5cd7fc0d44fba6c448eb059546
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@be8b65e524dd6b329811d47d548d6453fcc4f799
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny
+        run: cargo deny check

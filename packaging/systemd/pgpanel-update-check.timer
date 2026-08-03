@@ -1,0 +1,15 @@
+[Unit]
+Description=Optional forced PgPanel update check (daemon nudge)
+Documentation=https://github.com/pgpanel/pgpanel
+# Prefer relying on pgpanel-updater.service internal check_interval_secs.
+# Enable this timer only if you want an extra calendar-based Check nudge.
+Requires=pgpanel-update-check.service
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=pgpanel-update-check.service
+
+[Install]
+WantedBy=timers.target

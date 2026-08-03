@@ -1,0 +1,45 @@
+[Unit]
+Description=PgPanel update check nudge (via updater daemon socket)
+Documentation=https://github.com/pgpanel/pgpanel
+# Periodic GitHub polling is owned by pgpanel-updater.service (check_interval_secs).
+# This oneshot only asks the already-running daemon to Check — it must not spawn
+# a second privileged updater process.
+Requires=pgpanel-updater.service
+After=pgpanel-updater.service
+ConditionPathExists=/run/pgpanel/updater.sock
+
+[Service]
+Type=oneshot
+User=pgpanel
+Group=pgpanel
+
+Environment=PGPANEL_CONFIG=/etc/pgpanel/pgpanel.toml
+
+# Client-mode Check over the updater Unix socket (unprivileged; Group=pgpanel).
+ExecStart=/opt/pgpanel/current/bin/pgpanel-updater --config /etc/pgpanel/pgpanel.toml check
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+ReadOnlyPaths=/opt/pgpanel/current /etc/pgpanel
+ReadWritePaths=/run/pgpanel
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pgpanel-update-check
+
+[Install]
+WantedBy=multi-user.target
