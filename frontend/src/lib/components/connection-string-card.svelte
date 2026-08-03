@@ -63,6 +63,17 @@
 			: ''
 	);
 
+	const revealedMatchesSelection = $derived(
+		revealed != null &&
+			revealed.role === selectedRole &&
+			revealed.database === selectedDatabase &&
+			revealed.port === displayPort
+	);
+
+	const displayUri = $derived(
+		revealedMatchesSelection && revealed ? revealed.connection_string : uriTemplate
+	);
+
 	async function loadConnection(id: string) {
 		if (!id) {
 			connection = null;
@@ -219,13 +230,18 @@
 			</div>
 
 			<div class="space-y-1.5">
-				<Label>URI (no password)</Label>
+				<Label>{revealedMatchesSelection ? 'Connection URI' : 'URI preview (no password)'}</Label>
 				<Input
 					readonly
-					value={uriTemplate}
+					value={displayUri}
 					class="font-mono text-xs"
 					placeholder="Select database and role…"
 				/>
+				{#if revealedMatchesSelection}
+					<p class="text-xs text-muted-foreground font-mono break-all">
+						Preview without password: {uriTemplate}
+					</p>
+				{/if}
 			</div>
 
 			<div class="flex flex-wrap items-center gap-2">
@@ -233,7 +249,7 @@
 					disabled={revealing || !selectedRole || !selectedDatabase}
 					onclick={revealAndCopy}
 				>
-					{revealing ? 'Revealing…' : 'Reveal password & copy'}
+					{revealing ? 'Revealing…' : 'Reveal password & copy URI'}
 				</Button>
 			</div>
 
@@ -245,20 +261,37 @@
 						{#if revealed.warning}
 							<p class="text-sm">{revealed.warning}</p>
 						{/if}
-						<div class="flex flex-wrap items-center gap-2">
-							<Input
-								readonly
-								value={revealed.connection_string}
-								class="min-w-0 flex-1 font-mono text-xs"
-							/>
-							<Button
-								variant="secondary"
-								size="sm"
-								onclick={() => copyText(revealed!.connection_string)}
-							>
-								<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
-								Copy
-							</Button>
+						<div class="space-y-1.5">
+							<p class="text-xs font-medium">Password</p>
+							<div class="flex flex-wrap items-center gap-2">
+								<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
+									>{revealed.password}</code
+								>
+								<Button
+									variant="secondary"
+									size="sm"
+									onclick={() => copyText(revealed!.password)}
+								>
+									<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+									Copy
+								</Button>
+							</div>
+						</div>
+						<div class="space-y-1.5">
+							<p class="text-xs font-medium">Full connection string</p>
+							<div class="flex flex-wrap items-center gap-2">
+								<code class="min-w-0 flex-1 rounded-md bg-black/40 px-3 py-2 font-mono text-xs break-all"
+									>{revealed.connection_string}</code
+								>
+								<Button
+									variant="secondary"
+									size="sm"
+									onclick={() => copyText(revealed!.connection_string)}
+								>
+									<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+									Copy
+								</Button>
+							</div>
 						</div>
 					</Alert.Description>
 				</Alert.Root>

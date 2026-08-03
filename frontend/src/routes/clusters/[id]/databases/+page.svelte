@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api, type DatabaseRecord, type RoleRecord } from '$lib/api';
+	import {
+		api,
+		type ClusterConnectionRevealResponse,
+		type DatabaseRecord,
+		type RoleRecord
+	} from '$lib/api';
 	import PageHeader from '$lib/components/page-header.svelte';
 	import EmptyState from '$lib/components/empty-state.svelte';
 	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
@@ -21,8 +26,10 @@
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
 		Alert02Icon,
+		Copy01Icon,
 		DatabaseIcon,
 		Delete02Icon,
+		InformationCircleIcon,
 		UserIcon,
 		SecurityCheckIcon,
 		RefreshIcon
@@ -42,6 +49,8 @@
 	let roleGeneratePassword = $state(true);
 	let rolePassword = $state('');
 	let roleCreating = $state(false);
+	let createdRoleName = $state('');
+	let createdRolePassword = $state('');
 
 	// Access editor
 	let selectedRole = $state<RoleRecord | null>(null);
@@ -49,6 +58,8 @@
 	let accessApiAvailable = $state(true);
 	let accessLoading = $state(false);
 	let accessSaving = $state(false);
+	let revealingPassword = $state(false);
+	let revealedAccess = $state<ClusterConnectionRevealResponse | null>(null);
 
 	// Delete dialogs
 	let deleteDbOpen = $state(false);
@@ -128,6 +139,11 @@
 		}
 	}
 
+	async function copyText(text: string) {
+		await navigator.clipboard.writeText(text);
+		toast.success('Copied to clipboard');
+	}
+
 	async function createRole(e: Event) {
 		e.preventDefault();
 		roleCreating = true;
@@ -140,20 +156,24 @@
 			if (!roleGeneratePassword && rolePassword) {
 				body.password = rolePassword;
 			}
-			const res = await api<{ operation_id: string }>(`/api/clusters/${id}/roles`, {
-				method: 'POST',
-				body: JSON.stringify(body)
-			});
-			const name = roleName;
+			const res = await api<{ id: string; role_name: string; password: string }>(
+				`/api/clusters/${id}/roles`,
+				{
+					method: 'POST',
+					body: JSON.stringify(body)
+				}
+			);
+			createdRoleName = res.role_name;
+			createdRolePassword = res.password;
 			roleName = '';
 			rolePassword = '';
 			roleGeneratePassword = true;
-			trackOperation(res.operation_id, {
-				title: `Create role ${name}`,
-				onDone: () => load(),
-				onFail: () => load()
+			await load();
+			toast.success(`Role ${res.role_name} created`);
+			toast.message('Role password (copy now)', {
+				description: res.role_name,
+				duration: 15000
 			});
-			toast.success('Role creation queued');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed';
 			toast.error(error);
@@ -176,6 +196,7 @@
 			if (selectedRole?.name === name) {
 				selectedRole = null;
 				roleDatabases = [];
+				revealedAccess = null;
 			}
 			await load();
 		} catch (err) {
@@ -188,6 +209,7 @@
 	async function selectRole(role: RoleRecord) {
 		selectedRole = role;
 		roleDatabases = [];
+		revealedAccess = null;
 		accessLoading = true;
 		accessApiAvailable = true;
 		try {
@@ -204,6 +226,30 @@
 			}
 		} finally {
 			accessLoading = false;
+		}
+	}
+
+	async function revealSelectedRolePassword() {
+		if (!selectedRole) return;
+		const database = roleDatabases[0] ?? databases[0]?.name ?? 'postgres';
+		revealingPassword = true;
+		try {
+			const result = await api<ClusterConnectionRevealResponse>(
+				`/api/clusters/${id}/connection/reveal`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						role: selectedRole.name,
+						database,
+						host_mode: 'internal'
+					})
+				}
+			);
+			revealedAccess = result;
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Failed to reveal password');
+		} finally {
+			revealingPassword = false;
 		}
 	}
 
@@ -344,6 +390,35 @@
 	</Tabs.Content>
 
 	<Tabs.Content value="users" class="space-y-6">
+		{#if createdRolePassword}
+			<Alert.Root class="border-amber-500/40 bg-amber-500/10 text-amber-50">
+				<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
+				<Alert.Title>Credentials (copy now)</Alert.Title>
+				<Alert.Description class="mt-2 space-y-3">
+					<p class="text-xs opacity-80">
+						Password for role <span class="font-mono font-medium">{createdRoleName}</span> is shown
+						once here. You can also reveal it later from the cluster Overview connection string.
+					</p>
+					<div>
+						<p class="mb-1 text-xs font-medium">Role password</p>
+						<div class="flex flex-wrap items-center gap-2">
+							<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
+								>{createdRolePassword}</code
+							>
+							<Button
+								size="sm"
+								variant="secondary"
+								onclick={() => copyText(createdRolePassword)}
+							>
+								<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+								Copy
+							</Button>
+						</div>
+					</div>
+				</Alert.Description>
+			</Alert.Root>
+		{/if}
+
 		<div class="grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">
 			<Card.Root class="h-fit border-border/60">
 				<Card.Header>
@@ -495,29 +570,85 @@
 							</label>
 						{/each}
 					</div>
-				{:else if databases.length === 0}
-					<p class="text-sm text-muted-foreground">No databases to assign.</p>
 				{:else}
-					<div class="space-y-2">
-						{#each databases as d (d.id)}
-							<label
-								class="flex items-center gap-3 rounded-lg border border-border/60 p-3 text-sm transition-colors hover:bg-muted/30"
-							>
-								<Checkbox
-									checked={roleDatabases.includes(d.name)}
-									onCheckedChange={(v) => toggleDatabaseAccess(d.name, v === true)}
-								/>
-								<span class="font-mono">{d.name}</span>
-								{#if d.owner_role === selectedRole.name}
-									<Badge variant="outline" class="ml-auto">owner</Badge>
-								{/if}
-							</label>
-						{/each}
+					{#if databases.length === 0}
+						<p class="text-sm text-muted-foreground">No databases to assign.</p>
+					{:else}
+						<div class="space-y-2">
+							{#each databases as d (d.id)}
+								<label
+									class="flex items-center gap-3 rounded-lg border border-border/60 p-3 text-sm transition-colors hover:bg-muted/30"
+								>
+									<Checkbox
+										checked={roleDatabases.includes(d.name)}
+										onCheckedChange={(v) => toggleDatabaseAccess(d.name, v === true)}
+									/>
+									<span class="font-mono">{d.name}</span>
+									{#if d.owner_role === selectedRole.name}
+										<Badge variant="outline" class="ml-auto">owner</Badge>
+									{/if}
+								</label>
+							{/each}
+						</div>
+						<Separator class="my-4" />
+					{/if}
+					<div class="flex flex-wrap items-center gap-2" class:mt-4={databases.length === 0}>
+						{#if databases.length > 0}
+							<Button onclick={saveAccess} disabled={accessSaving}>
+								{accessSaving ? 'Saving…' : 'Save access'}
+							</Button>
+						{/if}
+						<Button
+							variant="outline"
+							onclick={revealSelectedRolePassword}
+							disabled={revealingPassword}
+						>
+							{revealingPassword ? 'Revealing…' : 'Reveal password'}
+						</Button>
 					</div>
-					<Separator class="my-4" />
-					<Button onclick={saveAccess} disabled={accessSaving}>
-						{accessSaving ? 'Saving…' : 'Save access'}
-					</Button>
+					{#if revealedAccess}
+						<Alert.Root class="mt-4 border-amber-500/40 bg-amber-500/10">
+							<HugeiconsIcon icon={InformationCircleIcon} class="size-4" strokeWidth={2} />
+							<Alert.Title>Password for {revealedAccess.role}</Alert.Title>
+							<Alert.Description class="mt-2 space-y-3">
+								{#if revealedAccess.warning}
+									<p class="text-sm">{revealedAccess.warning}</p>
+								{/if}
+								<div class="space-y-1.5">
+									<p class="text-xs font-medium">Password</p>
+									<div class="flex flex-wrap items-center gap-2">
+										<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-sm break-all"
+											>{revealedAccess.password}</code
+										>
+										<Button
+											variant="secondary"
+											size="sm"
+											onclick={() => copyText(revealedAccess!.password)}
+										>
+											<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+											Copy
+										</Button>
+									</div>
+								</div>
+								<div class="space-y-1.5">
+									<p class="text-xs font-medium">Connection string</p>
+									<div class="flex flex-wrap items-center gap-2">
+										<code class="rounded-md bg-black/40 px-3 py-2 font-mono text-xs break-all"
+											>{revealedAccess.connection_string}</code
+										>
+										<Button
+											variant="secondary"
+											size="sm"
+											onclick={() => copyText(revealedAccess!.connection_string)}
+										>
+											<HugeiconsIcon icon={Copy01Icon} class="size-4" strokeWidth={2} />
+											Copy
+										</Button>
+									</div>
+								</div>
+							</Alert.Description>
+						</Alert.Root>
+					{/if}
 				{/if}
 			</Card.Content>
 		</Card.Root>

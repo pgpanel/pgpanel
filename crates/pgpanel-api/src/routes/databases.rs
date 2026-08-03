@@ -254,7 +254,7 @@ async fn create_role(
     .bind(&now)
     .execute(&state.pool)
     .await
-    .ok();
+    .map_err(|e| AppError(Error::Internal(format!("failed to store role password: {e}"))))?;
 
     write_audit(
         &state,
