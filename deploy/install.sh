@@ -61,6 +61,7 @@ UPDATE_CHANNEL="stable"
 PGPANEL_VERSION="0.1.0"
 PGPANEL_IMAGE=""
 FORCE_UPDATE=0
+UPDATE_HOST_FILES=0
 USE_DOMAIN=1
 PANEL_DOMAIN="db.example.com"
 # Empty by default — Databasus is internal-only unless DATABASUS_PUBLIC=1
@@ -2528,22 +2529,34 @@ send_test_notification() {
 }
 
 # ── Update mode (no data loss) ───────────────────────────────────────────────
+# Default: image-only — curl VERSION + docker pull + recreate panel.
+# No git clone/fetch. App binary/UI live in the Docker image.
+# Optional: --with-host syncs compose/Caddy/installer via git when needed.
 do_update() {
   load_installer_conf
   REPO_URL="$PGPANEL_OFFICIAL_REPO"
   LOG_FILE="${LOG_DIR}/installer.log"
   mkdir -p "$LOG_DIR"
-  log_info "Starting production update…"
-  log_info "The panel app (binary, UI, migrations) lives in the Docker image — not in git."
-  log_info "Git sync only refreshes host templates: compose, Caddyfile, installer/CLI."
+
+  local update_host="${UPDATE_HOST_FILES:-0}"
+  if [[ "$update_host" -eq 1 ]]; then
+    log_info "Starting host+image update (git sync for compose/Caddy/installer)…"
+  else
+    log_info "Starting image-only update (no git — only GHCR panel image)…"
+    log_info "Tip: sudo pgpanel update --with-host  # if compose/Caddy/installer need a bump"
+  fi
 
   ensure_interactive_stdin
 
   local local_v remote_v running_img need_image_refresh=0
   local_v="$(get_local_version)"
   remote_v="$(get_remote_version "$GIT_REF")"
-  PGPANEL_VERSION="$local_v"
-  # Clear stale pin so status/target reflect tree VERSION (not old .env tag).
+  if [[ "$remote_v" == "unknown" || -z "$remote_v" ]]; then
+    die "Cannot fetch remote VERSION (network?). Try again later."
+  fi
+
+  # Target the remote VERSION — not the local git tree — for image-only upgrades.
+  PGPANEL_VERSION="$remote_v"
   PGPANEL_IMAGE=""
   resolve_panel_image
   running_img="$(get_running_panel_image)"
@@ -2555,16 +2568,18 @@ do_update() {
     log_info "Target image: ${PGPANEL_IMAGE}"
   fi
 
-  # Tree VERSION already matches remote after a manual `git pull`, but that does
-  # not mean the running Docker image was upgraded. Only skip when both match.
-  if [[ "$FORCE_UPDATE" -ne 1 && "$need_image_refresh" -eq 0 && "$local_v" == "$remote_v" && "$local_v" != "unknown" ]]; then
-    if ! confirm "Tree and running image already on ${local_v}. Re-pull images anyway?" "N"; then
+  local running_tag
+  running_tag="$(get_image_tag "$running_img")"
+  if [[ "$FORCE_UPDATE" -ne 1 && "$need_image_refresh" -eq 0 && "$running_tag" == "$remote_v" ]]; then
+    if ! confirm "Running image already on ${remote_v}. Re-pull/recreate anyway?" "N"; then
       log_info "Update cancelled"
       return 0
     fi
   fi
 
-  if ! confirm "Continue? Volumes, panel SQLite, .env secrets and Databasus data are kept." "Y"; then
+  local host_label="no"
+  [[ "$update_host" -eq 1 ]] && host_label="yes"
+  if ! confirm "Continue? Panel data and .env secrets are kept. Git sync: ${host_label}." "Y"; then
     die "Update aborted"
   fi
 
@@ -2575,60 +2590,80 @@ do_update() {
   if [[ -f "${DATA_DIR}/panel/panel.db" ]]; then
     cp -a "${DATA_DIR}/panel/panel.db" "$backup_dir/panel.db" || true
   fi
-  # Also backup WAL sidecar if present
   if [[ -f "${DATA_DIR}/panel/panel.db-wal" ]]; then
     cp -a "${DATA_DIR}/panel/panel.db-wal" "$backup_dir/" 2>/dev/null || true
     cp -a "${DATA_DIR}/panel/panel.db-shm" "$backup_dir/" 2>/dev/null || true
   fi
   log_ok "Config + panel DB backup → ${backup_dir}"
 
-  clone_or_update_repo
-  if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
-    die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
+  if [[ "$update_host" -eq 1 ]]; then
+    clone_or_update_repo
+    if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+      die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
+    fi
+    generate_or_load_secrets
+    render_caddyfile
+    render_compose
+    save_installer_conf
+    install_cli
+  else
+    # Pin version without git — app is entirely in the image.
+    mkdir -p "$INSTALL_DIR"
+    printf '%s\n' "$remote_v" >"${INSTALL_DIR}/VERSION"
+    if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+      die ".env missing — refuse to update without secrets. Restore from ${backup_dir}"
+    fi
   fi
 
-  # Force a registry pull so tag bumps (and mutable :latest) actually land.
   FORCE_PANEL_PULL=1
-  # Drop stale image pin from installer.conf so resolve_panel_image rebinds to VERSION.
+  PGPANEL_VERSION="$remote_v"
   PGPANEL_IMAGE=""
   resolve_panel_image
 
-  # NEVER regenerate secrets / never docker compose down -v
-  generate_or_load_secrets
-  render_caddyfile
-  render_compose
-  save_installer_conf
-
-  # Record previous version for rollback notes
   printf '%s\n' "$local_v" >"${backup_dir}/previous-version.txt"
-  printf '%s\n' "$(get_local_version)" >"${backup_dir}/target-version.txt"
+  printf '%s\n' "$remote_v" >"${backup_dir}/target-version.txt"
 
-  build_and_start
-  install_cli
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_IMAGE" "$PGPANEL_IMAGE"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_VERSION" "$PGPANEL_VERSION"
+  upsert_env_key "${INSTALL_DIR}/.env" "PGPANEL_PULL_POLICY" "missing"
+
+  ensure_panel_image
+
+  (
+    cd "${INSTALL_DIR}/deploy"
+    export PGPANEL_IMAGE PGPANEL_HOST_DATA="$DATA_DIR" PGPANEL_PULL_POLICY=missing
+    set -a
+    # shellcheck source=/dev/null
+    source "${INSTALL_DIR}/.env"
+    set +a
+    # Recreate only the panel — leave Caddy up.
+    log_info "Recreating panel service with ${PGPANEL_IMAGE}"
+    if ! PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --no-deps --force-recreate --no-build panel; then
+      log_warn "Panel-only recreate failed — falling back to full stack up"
+      prepare_compose_networks
+      PGPANEL_PULL_POLICY=never docker compose -f compose.yml up -d --remove-orphans --no-build
+    fi
+  )
 
   if ! health_check; then
     log_error "Update health check failed — rollback available from ${backup_dir}"
-    if confirm "Restore previous .env and re-pull previous image?" "Y"; then
+    if confirm "Restore previous .env and recreate previous image?" "Y"; then
       cp -a "${backup_dir}/.env" "${INSTALL_DIR}/.env" 2>/dev/null || true
-      if [[ -f "${backup_dir}/panel.db" ]]; then
-        (
-          cd "${INSTALL_DIR}/deploy"
-          docker compose stop panel 2>/dev/null || true
-        )
-        cp -a "${backup_dir}/panel.db" "${DATA_DIR}/panel/panel.db" || true
-      fi
       (
         cd "${INSTALL_DIR}/deploy"
         set -a
         # shellcheck source=/dev/null
         source "${INSTALL_DIR}/.env"
         set +a
-        docker compose up -d --remove-orphans
+        docker compose up -d --no-deps --force-recreate --no-build panel || docker compose up -d --remove-orphans
       ) || true
       log_warn "Rollback attempted. Check: pgpanel status"
     fi
     return 1
   fi
+
+  local mode_label="image-only (no git)"
+  [[ "$update_host" -eq 1 ]] && mode_label="host+image (git)"
 
   write_install_summary
   cat <<EOF
@@ -2636,15 +2671,15 @@ do_update() {
 ${C_GREEN}${C_BOLD}Update completed without data loss.${C_RESET}
 
   Previous version: ${local_v}
-  Current version:  $(get_local_version)
+  Current version:  ${remote_v}
   Panel image:      ${PGPANEL_IMAGE}
+  Mode:             ${mode_label}
   Backup:           ${backup_dir}
 
 Preserved:
-  • /opt/pgpanel/.env secrets
+  • ${INSTALL_DIR}/.env secrets
   • panel SQLite (${DATA_DIR}/panel)
   • PostgreSQL Docker volumes
-  • Databasus data (${DATA_DIR}/databasus)
 
 EOF
   log_ok "Update completed"
@@ -2656,9 +2691,10 @@ do_version_check() {
   show_version_status || true
   echo ""
   echo "Commands:"
-  echo "  pgpanel update          # safe upgrade"
-  echo "  pgpanel version         # show installed versions"
-  echo "  pgpanel status          # runtime health"
+  echo "  pgpanel update              # image-only (GHCR pull, no git)"
+  echo "  pgpanel update --with-host  # also sync compose/Caddy/installer"
+  echo "  pgpanel version             # show installed versions"
+  echo "  pgpanel status              # runtime health"
 }
 
 # ── Repair mode ──────────────────────────────────────────────────────────────
@@ -3051,6 +3087,7 @@ parse_args() {
       --mode=*) CLI_MODE="${1#*=}"; shift ;;
       --install-dir) INSTALL_DIR="$2"; shift 2 ;;
       --force-update) FORCE_UPDATE=1; shift ;;
+      --with-host|--full) UPDATE_HOST_FILES=1; shift ;;
       --help|-h)
         cat <<EOF
 PgPanel installer v${INSTALLER_VERSION}
@@ -3062,6 +3099,8 @@ Usage:
   sudo bash deploy/install.sh
   sudo bash deploy/install.sh --mode install|resume|update|repair|configure|security|version|uninstall
   sudo bash deploy/install.sh --mode resume    # continue after failure (keeps answers)
+  sudo bash deploy/install.sh --mode update                # image-only (no git)
+  sudo bash deploy/install.sh --mode update --with-host    # also sync compose/Caddy/installer via git
   sudo bash deploy/install.sh --mode update --force-update
 
 Never builds on the VPS — only pulls images and configures.

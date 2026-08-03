@@ -62,7 +62,8 @@ Usage:
   pgpanel status
   pgpanel start|stop|restart
   pgpanel logs [service]
-  pgpanel update              # upgrade without data loss
+  pgpanel update              # image-only (pull GHCR, no git)
+  pgpanel update --with-host  # also sync compose/Caddy/installer via git
   pgpanel resume              # continue interrupted install (keeps answers)
   pgpanel version             # local + remote version check
   pgpanel repair
@@ -150,7 +151,12 @@ main() {
     stop) need_root "$@"; compose stop ;;
     restart) need_root "$@"; compose restart ;;
     logs) shift; compose logs -f --tail=200 "$@" ;;
-    update) need_root "$@"; exec bash "$INSTALLER" --mode update ;;
+    update)
+      need_root "$@"
+      shift
+      # Pass through --with-host / --force-update etc.
+      exec bash "$INSTALLER" --mode update "$@"
+      ;;
     resume|continue) need_root "$@"; exec bash "$INSTALLER" --mode resume ;;
     version|version-check) cmd_version ;;
     repair) need_root "$@"; exec bash "$INSTALLER" --mode repair ;;
