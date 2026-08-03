@@ -220,6 +220,9 @@ log_cmd_preview() {
     i=$((i + 1))
     (( i >= max )) && break
   done <<<"$out"
+  # A while loop whose last body command is a false arithmetic comparison
+  # returns 1. This helper is informational and must never abort set -e flows.
+  return 0
 }
 
 # ── Install progress / answers (resume support) ──────────────────────────────
