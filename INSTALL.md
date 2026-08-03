@@ -85,6 +85,19 @@ The same pinned key is written to `/etc/pgpanel/signing.pub` on first install (e
 
 Re-running the installer performs the same repair behavior as `--repair`: verified release files and packaging are reinstalled, incomplete release trees and links are repaired, and services are restarted. Existing `/etc/pgpanel` configuration, `/var/lib/pgpanel` state, and PostgreSQL clusters are preserved except for settings explicitly selected on the command line.
 
+The installer does not install a PostgreSQL server major version or alter
+existing clusters. Install the server package for every version you want to
+create, for example:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y postgresql-16
+```
+
+Cluster creation requires the selected version's `initdb` binary. If it is
+missing, PgPanel reports the exact package command instead of only returning
+`pg_createcluster failed`.
+
 ## Exposure modes
 
 ### Local

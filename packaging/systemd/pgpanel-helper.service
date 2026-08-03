@@ -37,7 +37,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 # Helper needs broader access for postgresql-common; limit writes explicitly.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/pgpanel /run/pgpanel /var/lib/postgresql /etc/postgresql /var/log/postgresql /opt/pgpanel
+ReadWritePaths=/var/lib/pgpanel /run/pgpanel /run/postgresql /var/run/postgresql /var/lib/postgresql /etc/postgresql /var/log/postgresql /opt/pgpanel
 ReadOnlyPaths=/usr/bin/pg_lsclusters /usr/bin/pg_createcluster /usr/bin/pg_ctlcluster /usr/bin/pg_renamecluster /usr/bin/pg_dropcluster /usr/bin/pg_conftool /etc/pgpanel
 
 RuntimeDirectory=pgpanel

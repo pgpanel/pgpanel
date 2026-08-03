@@ -1,5 +1,13 @@
 {% extends "layouts/app.html" %}
 {% block content %}
+{% if let Some(err) = error %}
+<div class="max-w-lg mb-4 p-4 rounded-xl border border-red-200 bg-red-50 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-200">
+  <p class="font-medium">{{ err }}</p>
+  {% if let Some(details) = error_details %}
+  <pre class="mt-2 text-xs whitespace-pre-wrap break-words text-red-700 dark:text-red-300">{{ details }}</pre>
+  {% endif %}
+</div>
+{% endif %}
 <form method="post" action="/clusters/create" class="max-w-lg bg-white dark:bg-zinc-900 rounded-xl border p-6 space-y-4">
   <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
   <div><label class="text-sm font-medium">Version</label><select name="version" class="w-full mt-1 px-3 py-2 border rounded-lg">{% for v in allowed_versions %}<option value="{{ v }}">PostgreSQL {{ v }}</option>{% endfor %}</select></div>

@@ -41,7 +41,10 @@ async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) ->
             if is_versionable_asset(&path) {
                 builder = builder
                     .header(header::CACHE_CONTROL, CACHE_CONTROL_IMMUTABLE)
-                    .header(header::ETAG, HeaderValue::from_str(&etag_for(&data)).unwrap());
+                    .header(
+                        header::ETAG,
+                        HeaderValue::from_str(&etag_for(&data)).unwrap(),
+                    );
             }
 
             builder.body(Body::from(data)).unwrap()

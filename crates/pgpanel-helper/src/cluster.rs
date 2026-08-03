@@ -245,6 +245,18 @@ pub async fn cluster_create(
         ));
     }
 
+    let initdb_path = PathBuf::from(format!("/usr/lib/postgresql/{}/bin/initdb", params.version));
+    if tokio::fs::metadata(&initdb_path).await.is_err() {
+        return Err(helper_err(
+            HelperErrorCode::VersionNotInstalled,
+            format!(
+                "PostgreSQL {} server binaries are not installed; install postgresql-{} first",
+                params.version, params.version
+            ),
+            Some(format!("missing executable: {}", initdb_path.display())),
+        ));
+    }
+
     if find_cluster(ctx, &params.version, &params.name)
         .await
         .is_ok()
@@ -293,26 +305,7 @@ pub async fn cluster_create(
     .await?;
 
     if !out.success() {
-        let stderr = out.stderr_str();
-        if stderr.contains("already exists") || stderr.contains("cluster already exists") {
-            return Err(helper_err(
-                HelperErrorCode::AlreadyExists,
-                format!("cluster {}/{} already exists", params.version, params.name),
-                Some(stderr),
-            ));
-        }
-        if stderr.contains("port") && (stderr.contains("in use") || stderr.contains("already")) {
-            return Err(helper_err(
-                HelperErrorCode::PortInUse,
-                format!("port {} is already in use", params.port),
-                Some(stderr),
-            ));
-        }
-        return Err(command_failed(
-            &ctx.binaries().pg_createcluster,
-            &out,
-            "pg_createcluster failed",
-        ));
+        return Err(classify_create_failure(&out, params));
     }
 
     // Apply listen_addresses via safe config update.
@@ -796,15 +789,140 @@ fn map_io_error(context: &str, err: std::io::Error) -> HelperErrorBody {
 }
 
 fn command_failed(_program: &Path, out: &CmdOutput, message: &str) -> HelperErrorBody {
-    helper_err(
-        HelperErrorCode::CommandFailed,
-        message,
-        Some(format!(
-            "exit={:?} stderr={}",
-            out.status,
-            out.stderr_str().chars().take(500).collect::<String>()
-        )),
-    )
+    let details = command_failure_details(out);
+    helper_err(HelperErrorCode::CommandFailed, message, details)
+}
+
+/// Sanitize command stderr/stdout for authenticated admin diagnostics.
+pub(crate) fn sanitize_command_diagnostic(raw: &str) -> String {
+    const MAX_LEN: usize = 500;
+
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+        out.push(ch);
+        if out.len() >= MAX_LEN {
+            out.push('…');
+            break;
+        }
+    }
+
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    redact_sensitive_tokens(trimmed)
+}
+
+fn redact_sensitive_tokens(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("password=")
+            || lower.contains("pgpassword")
+            || lower.contains("secret=")
+            || lower.contains("token=")
+        {
+            lines.push("[redacted sensitive output]".to_string());
+        } else {
+            lines.push(redact_home_paths(line));
+        }
+    }
+    lines.join("\n")
+}
+
+fn redact_home_paths(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(idx) = rest.find("/home/") {
+        out.push_str(&rest[..idx]);
+        out.push_str("[home]/");
+        rest = &rest[idx + "/home/".len()..];
+        if let Some(slash) = rest.find('/') {
+            rest = &rest[slash + 1..];
+        } else {
+            rest = "";
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn command_failure_details(out: &CmdOutput) -> Option<String> {
+    let stderr = sanitize_command_diagnostic(&out.stderr_str());
+    if !stderr.is_empty() {
+        return Some(stderr);
+    }
+    out.status
+        .map(|code| format!("process exited with code {code}"))
+}
+
+fn classify_create_failure(out: &CmdOutput, params: &ClusterCreateParams) -> HelperErrorBody {
+    let stderr = out.stderr_str();
+    let details = command_failure_details(out);
+    let lower = stderr.to_ascii_lowercase();
+    let summary = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(sanitize_command_diagnostic)
+        .filter(|line| !line.is_empty());
+
+    if lower.contains("already exists") || lower.contains("cluster already exists") {
+        return helper_err(
+            HelperErrorCode::AlreadyExists,
+            format!("cluster {}/{} already exists", params.version, params.name),
+            details,
+        );
+    }
+    if lower.contains("port") && (lower.contains("in use") || lower.contains("already")) {
+        return helper_err(
+            HelperErrorCode::PortInUse,
+            format!("port {} is already in use", params.port),
+            details,
+        );
+    }
+    if lower.contains("not installed")
+        || lower.contains("unknown version")
+        || lower.contains("no such version")
+        || lower.contains("could not find")
+    {
+        return helper_err(
+            HelperErrorCode::VersionNotInstalled,
+            format!("PostgreSQL {} is not installed", params.version),
+            details,
+        );
+    }
+    if lower.contains("no space left") || lower.contains("disk full") {
+        return helper_err(
+            HelperErrorCode::InsufficientDisk,
+            "insufficient disk space to create cluster",
+            details,
+        );
+    }
+    if lower.contains("invalid locale") || (lower.contains("locale") && lower.contains("not found"))
+    {
+        return helper_err(
+            HelperErrorCode::InvalidInput,
+            format!("invalid locale {:?}", params.locale),
+            details,
+        );
+    }
+    if lower.contains("invalid encoding")
+        || (lower.contains("encoding") && lower.contains("not supported"))
+    {
+        return helper_err(
+            HelperErrorCode::InvalidInput,
+            format!("invalid encoding {:?}", params.encoding),
+            details,
+        );
+    }
+
+    let message = summary.unwrap_or_else(|| "pg_createcluster failed".into());
+    helper_err(HelperErrorCode::CommandFailed, message, details)
 }
 
 #[cfg(test)]
@@ -880,5 +998,95 @@ mod tests {
         let result = validate_delete_confirmation(name, confirmation)
             .map_err(|e| helper_err(HelperErrorCode::ConfirmationFailed, e.user_message(), None));
         Ok(result.map(|_| ()))
+    }
+
+    #[test]
+    fn sanitize_command_diagnostic_strips_control_chars_and_caps_length() {
+        let raw = format!("bad\x07news\nsecond line{}", "x".repeat(600));
+        let sanitized = sanitize_command_diagnostic(&raw);
+        assert!(!sanitized.contains('\x07'));
+        assert!(sanitized.contains("bad"));
+        assert!(sanitized.contains("second line"));
+        assert!(sanitized.chars().count() <= 501);
+        assert!(sanitized.ends_with('…'));
+    }
+
+    #[test]
+    fn sanitize_command_diagnostic_redacts_sensitive_tokens() {
+        let sanitized = sanitize_command_diagnostic("failed: password=sekret\nport in use");
+        assert!(sanitized.contains("[redacted sensitive output]"));
+        assert!(sanitized.contains("port in use"));
+    }
+
+    #[test]
+    fn sanitize_command_diagnostic_redacts_home_paths() {
+        let sanitized =
+            sanitize_command_diagnostic("cannot access /home/alice/.pg/data: permission denied");
+        assert!(sanitized.contains("[home]/"));
+        assert!(!sanitized.contains("/home/alice"));
+    }
+
+    #[test]
+    fn classify_create_failure_maps_port_in_use() {
+        let out = CmdOutput {
+            status: Some(1),
+            stdout: Vec::new(),
+            stderr: b"Error: port 5432 already in use\n".to_vec(),
+        };
+        let err = classify_create_failure(
+            &out,
+            &ClusterCreateParams {
+                version: "17".into(),
+                name: "main".into(),
+                display_name: None,
+                port: 5432,
+                encoding: "UTF8".into(),
+                locale: "C.UTF-8".into(),
+                data_checksums: false,
+                start: false,
+                listen_addresses: "127.0.0.1".into(),
+                data_directory: None,
+            },
+        );
+        assert_eq!(err.code, HelperErrorCode::PortInUse);
+        assert!(err.message.contains("5432"));
+        assert!(err.details.as_ref().unwrap().contains("already in use"));
+    }
+
+    #[test]
+    fn classify_create_failure_uses_stderr_summary_for_command_failed() {
+        let out = CmdOutput {
+            status: Some(1),
+            stdout: Vec::new(),
+            stderr: b"initdb: could not create directory: Permission denied\n".to_vec(),
+        };
+        let err = classify_create_failure(
+            &out,
+            &ClusterCreateParams {
+                version: "17".into(),
+                name: "main".into(),
+                display_name: None,
+                port: 5433,
+                encoding: "UTF8".into(),
+                locale: "C.UTF-8".into(),
+                data_checksums: false,
+                start: false,
+                listen_addresses: "127.0.0.1".into(),
+                data_directory: None,
+            },
+        );
+        assert_eq!(err.code, HelperErrorCode::CommandFailed);
+        assert!(err.message.contains("Permission denied"));
+        assert!(err.details.as_ref().unwrap().contains("Permission denied"));
+    }
+
+    #[test]
+    fn data_checksums_args_use_initdb_separator() {
+        let mut args: Vec<String> =
+            vec!["17".into(), "main".into(), "--port".into(), "5433".into()];
+        args.push("--".into());
+        args.push("--data-checksums".into());
+        assert_eq!(args.last().map(String::as_str), Some("--data-checksums"));
+        assert_eq!(args[args.len() - 2].as_str(), "--");
     }
 }

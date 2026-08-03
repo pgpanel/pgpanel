@@ -151,6 +151,8 @@ pub struct ClusterDetailPage<'a> {
 pub struct ClusterCreatePage<'a> {
     pub ctx: &'a LayoutCtx,
     pub allowed_versions: Vec<String>,
+    pub error: Option<&'a str>,
+    pub error_details: Option<&'a str>,
 }
 
 #[derive(Template)]

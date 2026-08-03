@@ -84,15 +84,7 @@ async fn detail(
 
 async fn create_form(State(state): State<AppState>, user: AuthUser) -> AppResult<Html<String>> {
     user.require(Permission::ClustersCreate)?;
-    let ctx = layout_ctx("Create Cluster", &user, "clusters");
-    let page = ClusterCreatePage {
-        ctx: &ctx,
-        allowed_versions: state.config.postgres.allowed_versions.clone(),
-    };
-    Ok(Html(
-        page.render()
-            .map_err(|e| AppError::Internal(e.to_string()))?,
-    ))
+    render_create_page(&state, &user, None, None).await
 }
 
 #[derive(Deserialize)]
@@ -165,7 +157,12 @@ async fn create_submit(
                 .ok();
             Ok(Redirect::to(&format!("/clusters/{}/{}", form.version, form.name)).into_response())
         }
-        HelperResult::Err { error } => Err(AppError::BadRequest(error.message)),
+        HelperResult::Err { error } => {
+            let err = AppError::from_helper_error(error);
+            render_create_page(&state, &user, Some(err.user_message()), err.details())
+                .await
+                .map(IntoResponse::into_response)
+        }
     }
 }
 
@@ -657,5 +654,41 @@ fn map_helper_err(e: HelperClientError) -> AppError {
         HelperClientError::Timeout => AppError::Internal("helper request timed out".into()),
         HelperClientError::Closed => AppError::Internal("helper connection closed".into()),
         HelperClientError::Protocol(e) => AppError::Helper(e),
+    }
+}
+
+async fn render_create_page(
+    state: &AppState,
+    user: &AuthUser,
+    error: Option<String>,
+    error_details: Option<&str>,
+) -> AppResult<Html<String>> {
+    let ctx = layout_ctx("Create Cluster", user, "clusters");
+    let page = ClusterCreatePage {
+        ctx: &ctx,
+        allowed_versions: state.config.postgres.allowed_versions.clone(),
+        error: error.as_deref(),
+        error_details,
+    };
+    Ok(Html(
+        page.render()
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pgpanel_protocol::{HelperErrorBody, HelperErrorCode};
+
+    #[test]
+    fn helper_create_error_preserves_details_for_form_render() {
+        let err = AppError::from_helper_error(HelperErrorBody {
+            code: HelperErrorCode::CommandFailed,
+            message: "initdb: permission denied".into(),
+            details: Some("initdb: permission denied".into()),
+        });
+        assert_eq!(err.user_message(), "initdb: permission denied");
+        assert_eq!(err.details(), Some("initdb: permission denied"));
     }
 }
