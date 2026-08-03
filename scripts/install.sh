@@ -429,6 +429,14 @@ ensure_directories() {
     run install -d -m 0750 -o "${PGPANEL_USER}" -g "${PGPANEL_GROUP}" "${INSTALL_ROOT}/state/staging"
     run install -d -m 0750 -o "${PGPANEL_USER}" -g "${PGPANEL_GROUP}" "${INSTALL_ROOT}/state/backups"
     run install -d -m 0750 -o root -g "${PGPANEL_GROUP}" "${RUN_DIR}"
+    # The upstream Caddy service runs as user `caddy`; pre-create its file log
+    # with matching ownership so service hardening cannot block startup.
+    if getent passwd caddy >/dev/null 2>&1; then
+        run install -d -m 0750 -o caddy -g caddy /var/log/caddy
+        run touch /var/log/caddy/pgpanel-access.log
+        run chown caddy:caddy /var/log/caddy/pgpanel-access.log
+        run chmod 0640 /var/log/caddy/pgpanel-access.log
+    fi
 }
 
 is_valid_ed25519_hex_key() {

@@ -44,8 +44,6 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
-RuntimeDirectory=pgpanel
-RuntimeDirectoryMode=0750
 StateDirectory=pgpanel
 StateDirectoryMode=0750
 

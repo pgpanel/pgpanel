@@ -42,6 +42,7 @@ ReadOnlyPaths=/usr/bin/pg_lsclusters /usr/bin/pg_createcluster /usr/bin/pg_ctlcl
 
 RuntimeDirectory=pgpanel
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 
 StandardOutput=journal
 StandardError=journal

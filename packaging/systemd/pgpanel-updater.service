@@ -50,6 +50,7 @@ ReadOnlyPaths=/etc/pgpanel /usr/bin/systemctl /bin/systemctl /etc/caddy/Caddyfil
 
 RuntimeDirectory=pgpanel
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 
 StandardOutput=journal
 StandardError=journal
